@@ -181,7 +181,7 @@ export interface ISearchAppDetailProps {
     use_kg: boolean;
     vector_similarity_weight: number;
     web_search: boolean;
-    chat_settingcross_languages: string[];
+    chat_settingcross_languages?: string[];
     meta_data_filter?: {
       method: string;
       manual: { key: string; op: string; value: string }[];

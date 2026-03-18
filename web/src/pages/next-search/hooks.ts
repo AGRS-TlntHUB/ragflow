@@ -306,6 +306,7 @@ export const useSendQuestion = (
   kbIds: string[],
   tenantId?: string,
   searchId: string = '',
+  searchConfig?: ISearchAppDetailProps['search_config'],
   related_search: boolean = false,
 ) => {
   const { sharedId } = useGetSharedSearchParams();
@@ -321,9 +322,34 @@ export const useSendQuestion = (
     useFetchRelatedQuestions(tenantId, searchId);
   const [searchStr, setSearchStr] = useState<string>('');
   const [isFirstRender, setIsFirstRender] = useState(true);
-  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>([]);
+  const [selectedDocumentIds, setSelectedDocumentIds] = useState<string[]>(
+    searchConfig?.doc_ids ?? [],
+  );
 
   const { pagination, setPagination } = useGetPaginationWithRouter();
+
+  const buildRetrievalPayload = useCallback(
+    (q: string, docIds: string[], page: number, size: number) => ({
+      kb_id: kbIds,
+      highlight: true,
+      question: q,
+      doc_ids: docIds,
+      page,
+      size,
+      search_id: searchId,
+      similarity_threshold: searchConfig?.similarity_threshold,
+      vector_similarity_weight: searchConfig?.vector_similarity_weight,
+      top_k: searchConfig?.top_k,
+      use_kg: searchConfig?.use_kg,
+      keyword: searchConfig?.keyword,
+      rerank_id: searchConfig?.rerank_id,
+      cross_languages:
+        searchConfig?.cross_languages ??
+        (searchConfig as any)?.chat_settingcross_languages ??
+        [],
+    }),
+    [kbIds, searchId, searchConfig],
+  );
 
   const sendQuestion = useCallback(
     (question: string, enableAI: boolean = true) => {
@@ -336,14 +362,9 @@ export const useSendQuestion = (
         setSendingLoading(true);
         send({ kb_ids: kbIds, question: q, tenantId, search_id: searchId });
       }
-      testChunk({
-        kb_id: kbIds,
-        highlight: true,
-        question: q,
-        page: 1,
-        size: pagination.pageSize,
-        search_id: searchId,
-      });
+      testChunk(
+        buildRetrievalPayload(q, selectedDocumentIds, 1, pagination.pageSize),
+      );
 
       if (related_search) {
         fetchRelatedQuestions(q);
@@ -352,12 +373,12 @@ export const useSendQuestion = (
     [
       send,
       testChunk,
-      kbIds,
+      buildRetrievalPayload,
       fetchRelatedQuestions,
       setPagination,
       pagination.pageSize,
       tenantId,
-      searchId,
+      selectedDocumentIds,
       related_search,
     ],
   );
@@ -383,34 +404,24 @@ export const useSendQuestion = (
       const q = trim(searchStr);
       if (sendingLoading || isEmpty(q)) return;
 
-      testChunk({
-        kb_id: kbIds,
-        highlight: true,
-        question: q,
-        doc_ids: documentIds ?? selectedDocumentIds,
-        page,
-        size,
-        search_id: searchId,
-      });
+      testChunk(
+        buildRetrievalPayload(
+          q,
+          documentIds ?? selectedDocumentIds,
+          page,
+          size,
+        ),
+      );
 
-      testChunkAll({
-        kb_id: kbIds,
-        highlight: true,
-        question: q,
-        doc_ids: [],
-        page,
-        size,
-        search_id: searchId,
-      });
+      testChunkAll(buildRetrievalPayload(q, [], page, size));
     },
     [
       searchStr,
       sendingLoading,
       testChunk,
-      kbIds,
+      buildRetrievalPayload,
       selectedDocumentIds,
       testChunkAll,
-      searchId,
     ],
   );
 
@@ -470,6 +481,7 @@ export const useSearching = ({
     searchData.search_config.kb_ids,
     tenantId as string,
     searchData.id,
+    searchData.search_config,
     searchData.search_config.related_search,
   );
 

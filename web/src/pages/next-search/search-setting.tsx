@@ -134,7 +134,7 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
         web_search: search_config?.web_search || false,
         doc_ids: [],
         similarity_threshold: search_config?.similarity_threshold || 0.2,
-        use_kg: false,
+        use_kg: search_config?.use_kg || false,
         rerank_id: search_config?.rerank_id || '',
         use_rerank: search_config?.rerank_id ? true : false,
         top_k: search_config?.top_k || 1024,
@@ -154,9 +154,12 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
             ? true
             : false,
         },
-        chat_settingcross_languages: [],
+        cross_languages:
+          search_config?.cross_languages ||
+          (search_config as any)?.chat_settingcross_languages ||
+          [],
         highlight: false,
-        keyword: false,
+        keyword: search_config?.keyword || false,
         related_search: search_config?.related_search || false,
         query_mindmap: search_config?.query_mindmap || false,
         meta_data_filter: search_config?.meta_data_filter,
