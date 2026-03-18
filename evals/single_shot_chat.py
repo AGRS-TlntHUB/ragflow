@@ -147,15 +147,23 @@ def _load_questions(path: Path) -> list[dict[str, Any]]:
             errors.append(f"entry #{idx} has missing/empty 'question'")
             continue
 
+        question_text = question.strip()
         metadata: dict[str, Any] = {}
         source_id = item.get("id")
         answer_type = item.get("answer_type")
         if source_id not in (None, ""):
             metadata["source_id"] = source_id
-        if answer_type not in (None, ""):
-            metadata["answer_type"] = answer_type
+        if isinstance(answer_type, str) and answer_type.strip():
+            normalized_answer_type = answer_type.strip()
+            metadata["answer_type"] = normalized_answer_type
+            metadata["source_question"] = question_text
+            question_text = (
+                f"{question_text}\n\n"
+                f"Requested answer type: {normalized_answer_type}.\n"
+                "Return only in this format."
+            )
 
-        case: dict[str, Any] = {"question": question.strip()}
+        case: dict[str, Any] = {"question": question_text}
         if metadata:
             case["metadata"] = metadata
         cases.append(case)

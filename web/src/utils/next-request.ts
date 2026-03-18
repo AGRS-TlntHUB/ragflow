@@ -106,6 +106,10 @@ request.interceptors.request.use(
 
 request.interceptors.response.use(
   async (response) => {
+    const skipGlobalErrorToast =
+      response?.config?.headers?.get?.('X-Skip-Error-Notification') === '1' ||
+      response?.config?.headers?.['X-Skip-Error-Notification'] === '1';
+
     if (response?.status === 413 || response?.status === 504) {
       message.error(RetcodeMessage[response?.status as ResultCode]);
     }
@@ -136,7 +140,7 @@ request.interceptors.response.use(
         authorizationUtil.removeAll();
         redirectToLogin();
       }
-    } else if (data?.code !== 0) {
+    } else if (data?.code !== 0 && !skipGlobalErrorToast) {
       notification.error({
         message: `${i18n.t('message.hint')} : ${data?.code}`,
         description: data?.message,

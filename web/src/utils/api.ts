@@ -261,6 +261,10 @@ export default {
   // evaluation
   listEvaluationRuns: `${api_host}/evaluation/run/list`,
   getEvaluationRun: (runId: string) => `${api_host}/evaluation/run/${runId}`,
+  createEvaluationDataset: `${api_host}/evaluation/dataset/create`,
+  importEvaluationDatasetCases: (datasetId: string) =>
+    `${api_host}/evaluation/dataset/${datasetId}/case/import`,
+  startEvaluationRun: `${api_host}/evaluation/run/start`,
   getEvaluationDatasetCases: (datasetId: string) =>
     `${api_host}/evaluation/dataset/${datasetId}/cases`,
 

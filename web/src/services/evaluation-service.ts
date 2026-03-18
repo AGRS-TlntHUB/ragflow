@@ -10,6 +10,19 @@ const methods = {
     url: (runId: string) => api.getEvaluationRun(runId),
     method: 'get',
   },
+  createEvaluationDataset: {
+    url: api.createEvaluationDataset,
+    method: 'post',
+  },
+  importEvaluationDatasetCases: {
+    url: (config: { datasetId: string }) =>
+      api.importEvaluationDatasetCases(config.datasetId),
+    method: 'post',
+  },
+  startEvaluationRun: {
+    url: api.startEvaluationRun,
+    method: 'post',
+  },
   getEvaluationDatasetCases: {
     url: (datasetId: string) => api.getEvaluationDatasetCases(datasetId),
     method: 'get',
