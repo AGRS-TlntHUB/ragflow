@@ -62,7 +62,7 @@ type EvalTemplate = {
 
 const DEFAULT_CHAT_ID = 'b50544e222a411f18adca3e91c097350';
 const DEFAULT_QUESTIONS_DATASET_PATH =
-  '/home/a1111/Agentic-RAG-competition/data/public_dataset/1_question.json';
+  'data_saved/public_dataset/1_question.json';
 const DEFAULT_QUESTIONS_DATASET_CONTENT = `[
   {
     "question": "Who were the claimants in case CFI 010/2024?",
@@ -71,7 +71,7 @@ const DEFAULT_QUESTIONS_DATASET_CONTENT = `[
   }
 ]`;
 const ALL_TYPES_MINIMAL_DATASET_PATH =
-  '/home/a1111/Agentic-RAG-competition/data/all_types_questions_minimal.json';
+  'data_saved/public_dataset/all_types_questions_minimal.json';
 const ALL_TYPES_MINIMAL_DATASET_CONTENT = `[
   {
     "question": "Who were the claimants in case CFI 010/2024?",
@@ -493,7 +493,7 @@ export default function Evals() {
     }
   };
 
-  const stringifyValue = (value: unknown) => {
+  const stringifyValue = (value: unknown): string => {
     if (value === null || value === undefined) return '';
     if (typeof value === 'string') return value;
     if (typeof value === 'number' || typeof value === 'boolean')

@@ -16,6 +16,7 @@ except ModuleNotFoundError:
 
 
 API_VERSION = "v1"
+REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 class ApiClient:
@@ -177,6 +178,13 @@ def _load_questions(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+def _resolve_questions_dataset_path(raw_path: str) -> Path:
+    candidate = Path(raw_path).expanduser()
+    if candidate.is_absolute():
+        return candidate
+    return (REPO_ROOT / candidate).resolve()
+
+
 def _derive_kb_ids(chat: dict[str, Any], chat_id: str) -> list[str]:
     datasets = chat.get("datasets")
     if not isinstance(datasets, list):
@@ -219,7 +227,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--questions-dataset-path",
         required=True,
-        help="Path to JSON array of question objects",
+        help="Path to JSON array of question objects (relative paths are resolved from ragflow repo root)",
     )
     parser.add_argument(
         "--print-resolved-config",
@@ -289,7 +297,8 @@ def main() -> int:
 
     chat = client.get_chat(args.chat_id)
     kb_ids = _derive_kb_ids(chat, args.chat_id)
-    cases = _load_questions(Path(args.questions_dataset_path))
+    questions_dataset_path = _resolve_questions_dataset_path(args.questions_dataset_path)
+    cases = _load_questions(questions_dataset_path)
 
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
     dataset_name = args.dataset_name or f"single_shot_{args.chat_id[:8]}_{timestamp}"

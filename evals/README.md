@@ -29,7 +29,7 @@ RAGFLOW_API_KEY=<your_ragflow_api_key>
 source .venv/bin/activate
 python evals/single_shot_chat.py \
   --chat-id "<chat_id>" \
-  --questions-dataset-path "/path/to/questions.json"
+  --questions-dataset-path "data_saved/public_dataset/1_question.json"
 ```
 
 Optional: print inferred endpoint/version before execution:
@@ -37,9 +37,11 @@ Optional: print inferred endpoint/version before execution:
 ```bash
 python evals/single_shot_chat.py \
   --chat-id "<chat_id>" \
-  --questions-dataset-path "/path/to/questions.json" \
+  --questions-dataset-path "data_saved/public_dataset/1_question.json" \
   --print-resolved-config
 ```
+
+`--questions-dataset-path` accepts absolute paths, or repo-relative paths (for example `data_saved/...`) resolved from the `ragflow/` root.
 
 ## Output
 

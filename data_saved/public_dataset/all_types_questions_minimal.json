@@ -1,0 +1,32 @@
+[
+  {
+    "question": "Who were the claimants in case CFI 010/2024?",
+    "answer_type": "names",
+    "id": "cdddeb6a063f29cbea5f10b3dccbd83aa16849e1f3124e223d141d1578efeb0a"
+  },
+  {
+    "question": "Summarize the court's final ruling in case CFI 010/2024.",
+    "answer_type": "free_text",
+    "id": "6618184ee84fbebc360162dc3825868eec4e5e81aae1901eb18a8e741fd323f3"
+  },
+  {
+    "question": "Was the main claim or application in case ARB 034/2025 approved or granted by the court?",
+    "answer_type": "boolean",
+    "id": "df0f24b2b339c62162b82eb3add3a2a71a275ee768fbb2835ccdd66bc79cd04f"
+  },
+  {
+    "question": "What was the claim value referenced in the appeal judgment CA 005/2025?",
+    "answer_type": "number",
+    "id": "d204a13070fd2f18eb3e9e939fdc80855a915dfafd7f49f8fc8e80d6a3d7637b"
+  },
+  {
+    "question": "Which case was decided earlier: CFI 016/2025 or ENF 269/2023?",
+    "answer_type": "name",
+    "id": "b9dc2dae206c155bc5936c971272e8154d22b4f9e3fa65795eb8b49a80d26b6f"
+  },
+  {
+    "question": "On what date was the Employment Law Amendment Law enacted?",
+    "answer_type": "date",
+    "id": "dd97e6cdec41ef77576ed86e037565fc88ff891edcdd39018e2d062e28f9605f"
+  }
+]
