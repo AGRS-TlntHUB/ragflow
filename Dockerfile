@@ -57,11 +57,7 @@ RUN --mount=type=cache,id=ragflow_apt,target=/var/cache/apt,sharing=locked \
 
 # Download resource from GitHub to /usr/share/infinity
 RUN mkdir -p /usr/share/infinity/resource && \
-    if [ "$NEED_MIRROR" == "1" ]; then \
-        git clone --depth 1 --single-branch https://gitee.com/infiniflow/resource /tmp/resource; \
-    else \
-        git clone --depth 1 --single-branch https://github.com/infiniflow/resource.git /tmp/resource; \
-    fi && \
+    git clone --depth 1 --single-branch https://github.com/infiniflow/resource.git /tmp/resource && \
     cp -r /tmp/resource/* /usr/share/infinity/resource && \
     rm -rf /tmp/resource
 
@@ -168,12 +164,15 @@ COPY pyproject.toml uv.lock ./
 # https://github.com/astral-sh/uv/issues/10462
 # uv records index url into uv.lock but doesn't failover among multiple indexes
 RUN --mount=type=cache,id=ragflow_uv,target=/root/.cache/uv,sharing=locked \
+    sed -i 's|gitee.com/infiniflow|github.com/infiniflow|g' uv.lock; \
     if [ "$NEED_MIRROR" == "1" ]; then \
         sed -i 's|pypi.org|mirrors.aliyun.com/pypi|g' uv.lock; \
     else \
         sed -i 's|mirrors.aliyun.com/pypi|pypi.org|g' uv.lock; \
     fi; \
-    uv sync --python 3.12 --frozen && \
+    uv sync --python 3.12 --frozen || \
+    (sed -i 's|mirrors.aliyun.com/pypi|pypi.org|g' uv.lock; \
+     uv sync --python 3.12 --frozen) && \
     # Ensure pip is available in the venv for runtime package installation (fixes #12651)
     .venv/bin/python3 -m ensurepip --upgrade
 
@@ -203,16 +202,16 @@ ENV PATH="${VIRTUAL_ENV}/bin:${PATH}"
 
 ENV PYTHONPATH=/ragflow/
 
+# Copy low-churn artifacts first to maximize cache reuse for backend-only changes.
+COPY --from=builder /ragflow/web/dist /ragflow/web/dist
+COPY --from=builder /ragflow/VERSION /ragflow/VERSION
+
+COPY pyproject.toml uv.lock ./
 COPY web web
 COPY admin admin
-COPY api api
 COPY conf conf
 COPY deepdoc deepdoc
-COPY rag rag
-COPY agent agent
-COPY pyproject.toml uv.lock ./
 COPY mcp mcp
-COPY common common
 COPY memory memory
 COPY bin bin
 
@@ -220,8 +219,10 @@ COPY docker/service_conf.yaml.template ./conf/service_conf.yaml.template
 COPY docker/entrypoint.sh ./
 RUN chmod +x ./entrypoint*.sh
 
-# Copy compiled web pages
-COPY --from=builder /ragflow/web/dist /ragflow/web/dist
+# Copy high-churn backend code last so frequent backend edits rebuild fewer layers.
+COPY common common
+COPY rag rag
+COPY agent agent
+COPY api api
 
-COPY --from=builder /ragflow/VERSION /ragflow/VERSION
 ENTRYPOINT ["./entrypoint.sh"]

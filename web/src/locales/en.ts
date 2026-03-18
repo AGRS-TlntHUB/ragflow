@@ -114,6 +114,7 @@ export default {
       welcome: 'Welcome to',
       dataset: 'Dataset',
       memories: 'Memory',
+      evals: 'Evals',
     },
     memories: {
       llmTooltip:

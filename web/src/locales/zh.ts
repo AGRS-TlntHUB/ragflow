@@ -99,6 +99,7 @@ export default {
       welcome: '欢迎来到',
       dataset: '知识库',
       memories: '记忆',
+      evals: '评测',
     },
     memories: {
       llmTooltip: '分析对话内容，提取关键信息，并生成结构化的记忆摘要。',

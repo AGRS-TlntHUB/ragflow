@@ -258,6 +258,12 @@ export default {
   updateMessageState: (data: { memory_id: string; message_id: string }) =>
     `${ExternalApi}${api_host}/messages/${data.memory_id}:${data.message_id}`,
 
+  // evaluation
+  listEvaluationRuns: `${api_host}/evaluation/run/list`,
+  getEvaluationRun: (runId: string) => `${api_host}/evaluation/run/${runId}`,
+  getEvaluationDatasetCases: (datasetId: string) =>
+    `${api_host}/evaluation/dataset/${datasetId}/cases`,
+
   // data pipeline
   fetchDataflow: (id: string) => `${api_host}/dataflow/get/${id}`,
   setDataflow: `${api_host}/dataflow/set`,

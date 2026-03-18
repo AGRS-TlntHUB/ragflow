@@ -569,6 +569,34 @@ class EvaluationService(CommonService):
     # ==================== Results & Analysis ====================
 
     @classmethod
+    def list_runs(
+        cls,
+        user_id: str,
+        dataset_id: Optional[str] = None,
+        dialog_id: Optional[str] = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> Dict[str, Any]:
+        """List evaluation runs for the current user."""
+        try:
+            query = EvaluationRun.select().where(
+                EvaluationRun.created_by == user_id
+            )
+
+            if dataset_id:
+                query = query.where(EvaluationRun.dataset_id == dataset_id)
+            if dialog_id:
+                query = query.where(EvaluationRun.dialog_id == dialog_id)
+
+            query = query.order_by(EvaluationRun.create_time.desc())
+            total = query.count()
+            runs = query.paginate(page, page_size)
+            return {"runs": [r.to_dict() for r in runs], "total": total}
+        except Exception as e:
+            logging.error(f"Error listing evaluation runs: {e}")
+            return {"runs": [], "total": 0}
+
+    @classmethod
     def get_run_results(cls, run_id: str) -> Dict[str, Any]:
         """Get results for an evaluation run"""
         try:

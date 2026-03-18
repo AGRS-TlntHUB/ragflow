@@ -369,8 +369,19 @@ async def list_evaluation_runs():
     - page_size: Items per page (default: 20)
     """
     try:
-        # TODO: Implement list_runs in EvaluationService
-        return get_json_result(data={"runs": [], "total": 0})
+        page = int(request.args.get("page", 1))
+        page_size = int(request.args.get("page_size", 20))
+        dataset_id = request.args.get("dataset_id")
+        dialog_id = request.args.get("dialog_id")
+
+        result = EvaluationService.list_runs(
+            user_id=current_user.id,
+            dataset_id=dataset_id,
+            dialog_id=dialog_id,
+            page=page,
+            page_size=page_size,
+        )
+        return get_json_result(data=result)
     except Exception as e:
         return server_error_response(e)
 
