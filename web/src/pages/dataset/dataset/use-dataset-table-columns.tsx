@@ -24,11 +24,13 @@ import { UseRenameDocumentShowType } from './use-rename-document';
 
 type UseDatasetTableColumnsType = UseChangeDocumentParserShowType &
   UseRenameDocumentShowType & {
+    documents: IDocumentInfo[];
     showLog: (record: IDocumentInfo) => void;
     showManageMetadataModal: (config: ShowManageMetadataModalProps) => void;
   };
 
 export function useDatasetTableColumns({
+  documents,
   showChangeParserModal,
   showRenameModal,
   showManageMetadataModal,
@@ -40,6 +42,15 @@ export function useDatasetTableColumns({
   // const { dataSourceInfo } = useDataSourceInfo();
   const { navigateToChunkParsedResult } = useNavigatePage();
   const { setDocumentStatus } = useSetDocumentStatus();
+  const enabledDocumentIds = documents
+    .filter((doc) => doc.status === '1')
+    .map((doc) => doc.id);
+  const allDocumentIds = documents.map((doc) => doc.id);
+  const allEnabled =
+    documents.length > 0 && enabledDocumentIds.length === documents.length;
+  const isIntermediate =
+    enabledDocumentIds.length > 0 &&
+    enabledDocumentIds.length < documents.length;
 
   const columns: ColumnDef<IDocumentInfo>[] = [
     {
@@ -162,7 +173,22 @@ export function useDatasetTableColumns({
     */
     {
       accessorKey: 'status',
-      header: t('enabled'),
+      header: () => (
+        <div className="flex items-center gap-2">
+          <span>{t('enabled')}</span>
+          <Switch
+            checked={allEnabled}
+            intermediate={isIntermediate}
+            disabled={documents.length === 0}
+            onCheckedChange={(checked) => {
+              setDocumentStatus({
+                status: checked,
+                documentId: allDocumentIds,
+              });
+            }}
+          />
+        </div>
+      ),
       cell: ({ row }) => {
         const id = row.original.id;
         return (

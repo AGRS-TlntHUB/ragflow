@@ -90,6 +90,7 @@ export function DatasetTable({
   const { showLog, logInfo, logVisible, hideLog } = useShowLog(documents);
 
   const columns = useDatasetTableColumns({
+    documents,
     showChangeParserModal,
     showRenameModal,
     showManageMetadataModal,
