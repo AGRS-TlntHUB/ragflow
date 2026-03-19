@@ -24,6 +24,7 @@ from api.db.joint_services.tenant_model_service import get_model_config_by_type_
 from api.db.services.llm_service import LLMBundle
 from api.db.services.tenant_llm_service import TenantLLMService
 from agent.component.llm import LLMParam, LLM
+from common.metadata_utils import update_metadata_to
 from rag.flow.base import ProcessBase, ProcessParamBase
 from rag.prompts.generator import run_toc_from_text
 
@@ -179,6 +180,18 @@ class Extractor(ProcessBase, LLM):
                 metadata[key] = values if len(values) > 1 else values[0]
         return metadata
 
+    @staticmethod
+    def _metadata_for_doc_store(meta):
+        if not meta or not isinstance(meta, dict):
+            return {}
+        out = {}
+        for k, v in meta.items():
+            if isinstance(v, list):
+                out[k] = [str(x) for x in v if x is not None and str(x).strip() != ""]
+            elif v is not None and str(v).strip() != "":
+                out[k] = str(v)
+        return out
+
     def _extract_by_regex(self, text):
         txt = "" if text is None else str(text)
         if self._param.field_name == "metadata":
@@ -211,6 +224,19 @@ class Extractor(ProcessBase, LLM):
                 return
 
             if self._param.mode == "regex":
+                if self._param.field_name == "metadata":
+                    doc_meta = {}
+                    for i, ck in enumerate(chunks):
+                        extracted = self._extract_by_regex(ck.get("text", ""))
+                        if isinstance(extracted, dict) and extracted:
+                            doc_meta = update_metadata_to(doc_meta, self._metadata_for_doc_store(extracted))
+                        prog = (i + 1.0) / len(chunks)
+                        if i % (len(chunks)//100+1) == 1:
+                            self.callback(prog, f"{i+1} / {len(chunks)}")
+                    for ck in chunks:
+                        ck["metadata"] = deepcopy(doc_meta) if doc_meta else {}
+                    self.set_output("chunks", chunks)
+                    return
                 for i, ck in enumerate(chunks):
                     extracted = self._extract_by_regex(ck.get("text", ""))
                     if self._param.field_name == "keywords" and not extracted:
@@ -240,6 +266,8 @@ class Extractor(ProcessBase, LLM):
                 if self._param.field_name == "keywords" and not extracted:
                     self.set_output("chunks", [{}])
                 else:
+                    if self._param.field_name == "metadata" and isinstance(extracted, dict):
+                        extracted = self._metadata_for_doc_store(extracted)
                     self.set_output("chunks", [{self._param.field_name: extracted}])
                 return
             msg, sys_prompt = self._sys_prompt_and_msg([], args)
