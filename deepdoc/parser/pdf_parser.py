@@ -1973,8 +1973,12 @@ class PlainParser:
         lines = []
         try:
             self.pdf = pdf2_read(filename if isinstance(filename, str) else BytesIO(filename))
-            for page in self.pdf.pages[from_page:to_page]:
-                lines.extend([t for t in page.extract_text().split("\n")])
+            for page_idx, page in enumerate(self.pdf.pages[from_page:to_page], start=from_page):
+                page_text = page.extract_text() or ""
+                width = float(page.mediabox.width)
+                height = float(page.mediabox.height)
+                position_tag = f"@@{page_idx + 1}\t{0.0:.1f}\t{width:.1f}\t{0.0:.1f}\t{height:.1f}##"
+                lines.extend([(line, position_tag) for line in page_text.split("\n")])
 
             outlines = self.pdf.outline
 
@@ -1991,7 +1995,7 @@ class PlainParser:
         if not self.outlines:
             logging.warning("Miss outlines")
 
-        return [(line, "") for line in lines], []
+        return lines, []
 
     def crop(self, ck, need_position):
         raise NotImplementedError

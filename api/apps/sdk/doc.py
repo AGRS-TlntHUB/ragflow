@@ -965,6 +965,7 @@ async def stop_parsing(tenant_id, dataset_id):
             )
         # Send cancellation signal via Redis to stop background task
         cancel_all_task_of(id)
+        TaskService.filter_delete([Task.doc_id == id, Task.progress < 1])
         info = {"run": "2", "progress": 0, "chunk_num": 0}
         DocumentService.update_by_id(id, info)
         settings.docStoreConn.delete({"doc_id": doc[0].id}, search.index_name(tenant_id), dataset_id)

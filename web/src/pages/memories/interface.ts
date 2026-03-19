@@ -100,6 +100,15 @@ export interface IMemoryAppDetailProps {
     meta_data_filter?: {
       method: string;
       manual: { key: string; op: string; value: string }[];
+      restrict_format?: boolean;
+      semi_auto?: Array<
+        | string
+        | {
+            key: string;
+            op?: string;
+            format?: string;
+          }
+      >;
     };
   };
   tenant_id: string;

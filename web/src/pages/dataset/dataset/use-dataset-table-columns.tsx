@@ -1,6 +1,8 @@
+import { ConfirmDeleteDialog } from '@/components/confirm-delete-dialog';
 import { FileIcon } from '@/components/icon-font';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
+import message from '@/components/ui/message';
 import { Switch } from '@/components/ui/switch';
 import {
   Tooltip,
@@ -9,15 +11,23 @@ import {
 } from '@/components/ui/tooltip';
 import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
 import {
+  DocumentApiAction,
   useRunDocument,
   useSetDocumentStatus,
 } from '@/hooks/use-document-request';
 import { IDocumentInfo } from '@/interfaces/database/document';
 import { cn } from '@/lib/utils';
+import {
+  getMetaDataService,
+  updateMetaData,
+} from '@/services/knowledge-service';
 import { formatDate } from '@/utils/date';
+import { useQueryClient } from '@tanstack/react-query';
 import { ColumnDef } from '@tanstack/table-core';
-import { ArrowUpDown, CircleX, RotateCcw } from 'lucide-react';
+import { ArrowUpDown, CircleX, RotateCcw, Trash2 } from 'lucide-react';
+import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useParams } from 'react-router';
 import { MetadataType } from '../components/metedata/constant';
 import { ShowManageMetadataModalProps } from '../components/metedata/interface';
 import { DocumentType, RunningStatus } from './constant';
@@ -43,10 +53,15 @@ export function useDatasetTableColumns({
   const { t } = useTranslation('translation', {
     keyPrefix: 'knowledgeDetails',
   });
+  const { t: tCommon } = useTranslation('translation', {
+    keyPrefix: 'common',
+  });
   // const { dataSourceInfo } = useDataSourceInfo();
   const { navigateToChunkParsedResult } = useNavigatePage();
   const { setDocumentStatus } = useSetDocumentStatus();
   const { runDocumentByIds } = useRunDocument();
+  const { id: kbId } = useParams();
+  const queryClient = useQueryClient();
   const runnableDocuments = documents.filter(
     (doc) => doc.type !== DocumentType.Virtual,
   );
@@ -71,6 +86,36 @@ export function useDatasetTableColumns({
   const isIntermediate =
     enabledDocumentIds.length > 0 &&
     enabledDocumentIds.length < documents.length;
+
+  const handleClearMetadataForAllDocuments = useCallback(async () => {
+    if (!kbId || allDocumentIds.length === 0) return;
+    const { data: metadataRes } = await getMetaDataService({
+      kb_id: kbId,
+      doc_ids: allDocumentIds,
+    });
+    const keys = Object.keys(metadataRes?.data?.summary || {});
+    if (keys.length === 0) {
+      message.success(t('message.operated'));
+      return;
+    }
+    const { data: updateRes } = await updateMetaData({
+      kb_id: kbId,
+      doc_ids: allDocumentIds,
+      data: {
+        deletes: keys.map((key) => ({ key })),
+        updates: [],
+      },
+    });
+    if (updateRes?.code === 0) {
+      queryClient.invalidateQueries({
+        queryKey: [DocumentApiAction.FetchDocumentList],
+      });
+      queryClient.invalidateQueries({
+        queryKey: [DocumentApiAction.FetchDocumentFilter],
+      });
+      message.success(t('message.operated'));
+    }
+  }, [kbId, allDocumentIds, queryClient, t]);
 
   const columns: ColumnDef<IDocumentInfo>[] = [
     {
@@ -230,7 +275,37 @@ export function useDatasetTableColumns({
     },
     {
       accessorKey: 'meta_fields',
-      header: t('metadata.metadata'),
+      header: () => (
+        <div className="flex items-center gap-1">
+          <span>{t('metadata.metadata')}</span>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <ConfirmDeleteDialog
+                title={t('metadata.clearAllMetadata')}
+                okButtonText={tCommon('clear')}
+                onOk={handleClearMetadataForAllDocuments}
+                content={{
+                  title: t('metadata.clearAllMetadataConfirmTitle'),
+                  node: (
+                    <div>{t('metadata.clearAllMetadataConfirmContent')}</div>
+                  ),
+                }}
+              >
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  disabled={documents.length === 0}
+                >
+                  <Trash2 className="text-state-error" />
+                </Button>
+              </ConfirmDeleteDialog>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>{t('metadata.clearAllMetadata')}</p>
+            </TooltipContent>
+          </Tooltip>
+        </div>
+      ),
       cell: ({ row }) => {
         const length = Object.keys(row.getValue('meta_fields') || {}).length;
         return (

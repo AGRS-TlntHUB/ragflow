@@ -34,6 +34,7 @@ class ExtractorParam(ProcessParamBase, LLMParam):
         super().__init__()
         self.mode = "llm"
         self.field_name = ""
+        self.title_page_only = False
         self.keyword_regexes = []
         self.metadata_regexes = []
 
@@ -200,6 +201,58 @@ class Extractor(ProcessBase, LLM):
             return self._extract_keywords_by_regex(txt)
         return ""
 
+    @staticmethod
+    def _coerce_page_number(value):
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            matched = re.search(r"\d+", value)
+            if matched:
+                return int(matched.group(0))
+        return None
+
+    def _get_chunk_pages(self, chunk):
+        pages = []
+        page_num_int = chunk.get("page_num_int")
+        if isinstance(page_num_int, list):
+            for item in page_num_int:
+                page = self._coerce_page_number(item)
+                if page is not None:
+                    pages.append(page)
+        elif page_num_int is not None:
+            page = self._coerce_page_number(page_num_int)
+            if page is not None:
+                pages.append(page)
+
+        if pages:
+            return sorted(set(pages))
+
+        for position_key in ["positions", "position_int"]:
+            positions = chunk.get(position_key) or []
+            for position in positions:
+                page = None
+                if isinstance(position, dict):
+                    page = self._coerce_page_number(position.get("page_number"))
+                elif isinstance(position, (list, tuple)) and position:
+                    page = self._coerce_page_number(position[0])
+                if page is not None:
+                    pages.append(page)
+
+        return sorted(set(pages))
+
+    def _get_first_page_number(self, chunks):
+        pages = []
+        for chunk in chunks:
+            pages.extend(self._get_chunk_pages(chunk))
+        return min(pages) if pages else None
+
+    def _is_target_page_chunk(self, chunk, first_page_number):
+        if not self._param.title_page_only or first_page_number is None:
+            return True
+        return first_page_number in self._get_chunk_pages(chunk)
+
     async def _invoke(self, **kwargs):
         self.set_output("output_format", "chunks")
         self.callback(random.randint(1, 5) / 100.0, "Start to generate.")
@@ -224,10 +277,21 @@ class Extractor(ProcessBase, LLM):
                 return
 
             if self._param.mode == "regex":
+                first_page_number = None
+                if self._param.title_page_only:
+                    first_page_number = self._get_first_page_number(chunks)
+                    if first_page_number is None:
+                        self.callback(
+                            0.05,
+                            "Title page only is enabled, but no page metadata was found. Applying regex to all chunks.",
+                        )
                 if self._param.field_name == "metadata":
                     doc_meta = {}
                     for i, ck in enumerate(chunks):
-                        extracted = self._extract_by_regex(ck.get("text", ""))
+                        if not self._is_target_page_chunk(ck, first_page_number):
+                            extracted = {}
+                        else:
+                            extracted = self._extract_by_regex(ck.get("text", ""))
                         if isinstance(extracted, dict) and extracted:
                             doc_meta = update_metadata_to(doc_meta, self._metadata_for_doc_store(extracted))
                         prog = (i + 1.0) / len(chunks)
@@ -238,13 +302,47 @@ class Extractor(ProcessBase, LLM):
                     self.set_output("chunks", chunks)
                     return
                 for i, ck in enumerate(chunks):
-                    extracted = self._extract_by_regex(ck.get("text", ""))
+                    if not self._is_target_page_chunk(ck, first_page_number):
+                        extracted = ""
+                    else:
+                        extracted = self._extract_by_regex(ck.get("text", ""))
                     if self._param.field_name == "keywords" and not extracted:
                         ck.pop("keywords", None)
                     else:
                         ck[self._param.field_name] = extracted
                     prog = (i + 1.0) / len(chunks)
                     if i % (len(chunks)//100+1) == 1:
+                        self.callback(prog, f"{i+1} / {len(chunks)}")
+                self.set_output("chunks", chunks)
+                return
+
+            if self._param.field_name == "metadata" and self._param.title_page_only:
+                first_page_number = self._get_first_page_number(chunks)
+                target_chunks = chunks
+                if first_page_number is not None:
+                    target_chunks = [ck for ck in chunks if self._is_target_page_chunk(ck, first_page_number)]
+                else:
+                    self.callback(
+                        0.05,
+                        "Title page only is enabled, but no page metadata was found. Applying extraction to all chunks.",
+                    )
+
+                title_page_context = "\n".join(
+                    [
+                        str(ck.get("text", "")).strip()
+                        for ck in target_chunks
+                        if str(ck.get("text", "")).strip()
+                    ]
+                )
+                args[chunks_key] = title_page_context
+                msg, sys_prompt = self._sys_prompt_and_msg([], args)
+                msg.insert(0, {"role": "system", "content": sys_prompt})
+                extracted = await self._generate_async(msg)
+
+                for i, ck in enumerate(chunks):
+                    ck[self._param.field_name] = extracted
+                    prog = (i + 1.0) / len(chunks)
+                    if i % (len(chunks) // 100 + 1) == 1:
                         self.callback(prog, f"{i+1} / {len(chunks)}")
                 self.set_output("chunks", chunks)
                 return

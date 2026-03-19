@@ -180,6 +180,7 @@ REFLECT = load_prompt("reflect")
 SUMMARY4MEMORY = load_prompt("summary4memory")
 RANK_MEMORY = load_prompt("rank_memory")
 META_FILTER = load_prompt("meta_filter")
+META_FILTER_FORMAT = load_prompt("meta_filter_format")
 ASK_SUMMARY = load_prompt("ask_summary")
 
 PROMPT_JINJA_ENV = jinja2.Environment(autoescape=False, trim_blocks=True, lstrip_blocks=True)
@@ -477,7 +478,13 @@ async def rank_memories_async(chat_mdl, goal: str, sub_goal: str, tool_call_summ
     return re.sub(r"^.*</think>", "", ans, flags=re.DOTALL)
 
 
-async def gen_meta_filter(chat_mdl, meta_data: dict, query: str, constraints: dict = None) -> dict:
+async def gen_meta_filter(
+        chat_mdl,
+        meta_data: dict,
+        query: str,
+        constraints: dict = None,
+        formats: dict = None,
+) -> dict:
     meta_data_structure = {}
     for key, values in meta_data.items():
         meta_data_structure[key] = list(values.keys()) if isinstance(values, dict) else values
@@ -488,6 +495,10 @@ async def gen_meta_filter(chat_mdl, meta_data: dict, query: str, constraints: di
         user_question=query,
         constraints=json.dumps(constraints) if constraints else None
     )
+    if formats:
+        sys_prompt = f"{sys_prompt}\n\n" + PROMPT_JINJA_ENV.from_string(
+            META_FILTER_FORMAT
+        ).render(formats=json.dumps(formats))
     user_prompt = "Generate filters:"
     ans = await chat_mdl.async_chat(sys_prompt, [{"role": "user", "content": user_prompt}])
     ans = re.sub(r"(^.*</think>|```json\n|```\n*$)", "", ans, flags=re.DOTALL)

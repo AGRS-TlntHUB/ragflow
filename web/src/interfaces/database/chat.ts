@@ -69,6 +69,15 @@ export interface IDialog {
 interface MetaDataFilter {
   manual: Manual[];
   method: string;
+  restrict_format?: boolean;
+  semi_auto?: Array<
+    | string
+    | {
+        key: string;
+        op?: string;
+        format?: string;
+      }
+  >;
 }
 
 interface Manual {

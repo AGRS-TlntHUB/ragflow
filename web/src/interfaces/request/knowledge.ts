@@ -10,12 +10,20 @@ export interface ITestRetrievalRequestBody {
   meta_data_filter?: {
     logic?: string;
     method?: string;
+    restrict_format?: boolean;
     manual?: Array<{
       key: string;
       op: string;
       value: string;
     }>;
-    semi_auto?: string[];
+    semi_auto?: Array<
+      | string
+      | {
+          key: string;
+          op?: string;
+          format?: string;
+        }
+    >;
   };
 }
 

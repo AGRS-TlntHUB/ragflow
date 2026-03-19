@@ -2,7 +2,13 @@ import { DelimiterInput } from '@/components/delimiter-form-field';
 import { RAGFlowFormItem } from '@/components/ragflow-form';
 import { SliderInputFormField } from '@/components/slider-input-form-field';
 import { BlockButton, Button } from '@/components/ui/button';
-import { Form, FormControl, FormField, FormItem } from '@/components/ui/form';
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+} from '@/components/ui/form';
 import { Switch } from '@/components/ui/switch';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { Trash2 } from 'lucide-react';
@@ -23,6 +29,7 @@ const outputList = buildOutputList(initialSplitterValues.outputs);
 export const FormSchema = z.object({
   chunk_token_size: z.number(),
   image_table_context_window: z.number(),
+  chunk_per_page_first: z.boolean(),
   delimiters: z.array(
     z.object({
       value: z.string().optional(),
@@ -82,6 +89,28 @@ const SplitterForm = ({ node }: INextOperatorForm) => {
           label={t('knowledgeConfiguration.imageTableContextWindow')}
           tooltip={t('knowledgeConfiguration.imageTableContextWindowTip')}
         ></SliderInputFormField>
+        <fieldset>
+          <div className="mb-2 flex justify-between items-center gap-1">
+            <FormLabel tooltip={t('flow.chunkPerPageFirstTip')}>
+              {t('flow.chunkPerPageFirst')}
+            </FormLabel>
+            <FormField
+              control={form.control}
+              name="chunk_per_page_first"
+              render={({ field: { value, onChange, ...restProps } }) => (
+                <FormItem>
+                  <FormControl>
+                    <Switch
+                      checked={Boolean(value)}
+                      onCheckedChange={onChange}
+                      {...restProps}
+                    />
+                  </FormControl>
+                </FormItem>
+              )}
+            />
+          </div>
+        </fieldset>
         <section>
           <span className="mb-2 inline-block">{t('flow.delimiters')}</span>
           <div className="space-y-4">

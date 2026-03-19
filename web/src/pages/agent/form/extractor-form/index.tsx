@@ -5,8 +5,9 @@ import { SelectWithSearch } from '@/components/originui/select-with-search';
 import { RAGFlowFormItem } from '@/components/ragflow-form';
 import { BlockButton, Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader } from '@/components/ui/card';
-import { Form } from '@/components/ui/form';
+import { Form, FormControl, FormField, FormItem } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { PromptEditor } from '@/pages/agent/form/components/prompt-editor';
 import { buildOptions } from '@/utils/form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -32,6 +33,7 @@ import { useSwitchPrompt } from './use-switch-prompt';
 export const FormSchema = z.object({
   field_name: z.string(),
   mode: z.enum([ExtractorMode.LanguageModel, ExtractorMode.RegularExpressions]),
+  title_page_only: z.boolean().optional(),
   sys_prompt: z.string().optional(),
   prompts: z.string().optional(),
   keyword_regexes: z
@@ -236,6 +238,10 @@ const ExtractorForm = ({ node }: INextOperatorForm) => {
     fieldName as ContextGeneratorFieldName,
   );
   const isRegexMode = regexEnabled && mode === ExtractorMode.RegularExpressions;
+  const showTitlePageOnly =
+    isRegexMode ||
+    (fieldName === ContextGeneratorFieldName.Metadata &&
+      mode === ExtractorMode.LanguageModel);
 
   const metadataRegexesFieldArray = useFieldArray({
     name: 'metadata_regexes',
@@ -296,6 +302,29 @@ const ExtractorForm = ({ node }: INextOperatorForm) => {
               ]}
             />
           </RAGFlowFormItem>
+        )}
+
+        {showTitlePageOnly && (
+          <fieldset>
+            <div className="mb-2 flex justify-between items-center gap-1">
+              <span>{t('flow.titlePageOnly')}</span>
+              <FormField
+                control={form.control}
+                name="title_page_only"
+                render={({ field: { value, onChange, ...restProps } }) => (
+                  <FormItem>
+                    <FormControl>
+                      <Switch
+                        checked={Boolean(value)}
+                        onCheckedChange={onChange}
+                        {...restProps}
+                      />
+                    </FormControl>
+                  </FormItem>
+                )}
+              />
+            </div>
+          </fieldset>
         )}
 
         {!isRegexMode && !isToc && (

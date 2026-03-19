@@ -233,6 +233,7 @@ export const initialSplitterValues = {
   },
   chunk_token_size: 512,
   overlapped_percent: 0,
+  chunk_per_page_first: false,
   delimiters: [{ value: '\n' }],
   image_table_context_window: 0,
 };
@@ -262,6 +263,7 @@ export const initialExtractorValues = {
   ...initialLlmBaseValues,
   mode: ExtractorMode.LanguageModel,
   field_name: ContextGeneratorFieldName.Summary,
+  title_page_only: false,
   keyword_regexes: [{ expression: '' }],
   metadata_regexes: [{ key: '', expressions: [{ expression: '' }] }],
   outputs: {

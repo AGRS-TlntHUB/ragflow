@@ -46,6 +46,22 @@ from rag.utils.base64_image import image2id
 from common.misc_utils import thread_pool_exec
 
 
+def normalize_parse_method(parse_method: str) -> str:
+    if not isinstance(parse_method, str):
+        return ""
+    lowered = parse_method.strip().lower()
+    if not lowered:
+        return ""
+    if lowered.endswith("@mineru"):
+        return "mineru"
+    if lowered.endswith("@paddleocr"):
+        return "paddleocr"
+    normalized = re.sub(r"[\s\-]+", "_", lowered)
+    if normalized == "tcadp_parser":
+        return "tcadp parser"
+    return normalized
+
+
 class ParserParam(ProcessParamBase):
     def __init__(self):
         super().__init__()
@@ -183,7 +199,8 @@ class ParserParam(ProcessParamBase):
             pdf_parse_method = pdf_config.get("parse_method", "")
             self.check_empty(pdf_parse_method, "Parse method abnormal.")
 
-            if pdf_parse_method.lower() not in ["deepdoc", "plain_text", "mineru", "docling", "tcadp parser", "paddleocr"]:
+            normalized_pdf_parse_method = normalize_parse_method(pdf_parse_method)
+            if normalized_pdf_parse_method not in ["deepdoc", "naive", "plain_text", "mineru", "docling", "tcadp parser", "paddleocr"]:
                 self.check_empty(pdf_config.get("lang", ""), "PDF VLM language")
 
             pdf_output_format = pdf_config.get("output_format", "")
@@ -337,13 +354,33 @@ class Parser(ProcessBase):
             elif lowered.endswith("@paddleocr"):
                 parser_model_name = raw_parse_method.rsplit("@", 1)[0]
                 parse_method = "PaddleOCR"
+        parse_method = normalize_parse_method(parse_method)
 
-        if parse_method.lower() == "deepdoc":
+        if parse_method in ("deepdoc", "naive"):
             bboxes = RAGFlowPdfParser().parse_into_bboxes(blob, callback=self.callback)
-        elif parse_method.lower() == "plain_text":
+        elif parse_method == "plain_text":
             lines, _ = PlainParser()(blob)
-            bboxes = [{"text": t} for t, _ in lines]
-        elif parse_method.lower() == "mineru":
+            bboxes = []
+            for text, position_tag in lines:
+                box = {"text": text}
+                if isinstance(position_tag, str) and position_tag:
+                    extracted_positions = RAGFlowPdfParser.extract_positions(position_tag)
+                    if extracted_positions:
+                        page_indexes, x0, x1, top, bottom = extracted_positions[0]
+                        page_number = page_indexes[-1] + 1
+                        box.update(
+                            {
+                                "position_tag": position_tag,
+                                "positions": [[page_number, x0, x1, top, bottom]],
+                                "page_number": page_number,
+                                "x0": float(x0),
+                                "x1": float(x1),
+                                "top": float(top),
+                                "bottom": float(bottom),
+                            }
+                        )
+                bboxes.append(box)
+        elif parse_method == "mineru":
 
             def resolve_mineru_llm_name():
                 configured = parser_model_name or conf.get("mineru_llm_name")
@@ -386,7 +423,7 @@ class Parser(ProcessBase):
                     "text": t,
                 }
                 bboxes.append(box)
-        elif parse_method.lower() == "docling":
+        elif parse_method == "docling":
             pdf_parser = DoclingParser(docling_server_url=os.environ.get("DOCLING_SERVER_URL", ""))
             lines, _ = pdf_parser.parse_pdf(
                 filepath=name,
@@ -407,7 +444,7 @@ class Parser(ProcessBase):
                     "positions": [[pos[0][-1], *pos[1:]] for pos in pdf_parser.extract_positions(poss)] if isinstance(poss, str) and poss else [],
                 }
                 bboxes.append(box)
-        elif parse_method.lower() == "tcadp parser":
+        elif parse_method == "tcadp parser":
             # ADP is a document parsing tool using Tencent Cloud API
             table_result_type = conf.get("table_result_type", "1")
             markdown_image_response_type = conf.get("markdown_image_response_type", "1")
@@ -446,7 +483,7 @@ class Parser(ProcessBase):
                         bboxes.append({"text": section})
                 else:
                     bboxes.append({"text": section})
-        elif parse_method.lower() == "paddleocr":
+        elif parse_method == "paddleocr":
 
             def resolve_paddleocr_llm_name():
                 configured = parser_model_name or conf.get("paddleocr_llm_name")

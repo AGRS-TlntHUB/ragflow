@@ -507,6 +507,51 @@ class RedisDB:
                 self.__open__()
         return None
 
+    def remove_task_messages(self, queue_names: list[str], task_ids: list[str], batch_size: int = 100) -> int:
+        task_ids = set(task_ids or [])
+        if not task_ids:
+            return 0
+
+        removed = 0
+        for queue_name in queue_names:
+            start = "-"
+            while True:
+                try:
+                    messages = self.REDIS.xrange(queue_name, min=start, max="+", count=batch_size)
+                except Exception as e:
+                    if "no such key" not in str(e).lower():
+                        logging.warning(
+                            "RedisDB.remove_task_messages "
+                            + str(queue_name)
+                            + " got exception: "
+                            + str(e)
+                        )
+                        self.__open__()
+                    break
+
+                if not messages:
+                    break
+
+                msg_ids = []
+                for msg_id, payload in messages:
+                    raw_message = payload.get("message")
+                    if not raw_message:
+                        continue
+                    try:
+                        if json.loads(raw_message).get("id") in task_ids:
+                            msg_ids.append(msg_id)
+                    except Exception:
+                        continue
+
+                if msg_ids:
+                    removed += self.REDIS.xdel(queue_name, *msg_ids)
+
+                if len(messages) < batch_size:
+                    break
+                start = f"({messages[-1][0]}"
+
+        return removed
+
     def delete_if_equal(self, key: str, expected_value: str) -> bool:
         """
         Do following atomically:

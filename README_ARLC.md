@@ -15,18 +15,26 @@ This downloads:
 
 ## 2) Build Docker and launch
 
-Build the Docker image:
+Build the Docker image using the same tag configured in `docker/.env`:
 
 ```bash
 cd /home/a1111/ragflow
-docker build --platform linux/amd64 -f Dockerfile -t infiniflow/ragflow:nightly .
+bash scripts/dev-up.sh --build
 ```
 
-Launch services:
+Launch services and the Vite UI:
 
 ```bash
 cd /home/a1111/ragflow
 bash scripts/dev-up.sh -d
+```
+
+Rebuild after backend changes:
+
+```bash
+cd /home/a1111/ragflow
+bash scripts/dev-down.sh
+bash scripts/dev-up.sh --build -d
 ```
 
 Stop services:
@@ -46,4 +54,4 @@ Default:
 
 `http://localhost:9222`
 
-If you change backend code, rebuild the Docker image and relaunch services.
+If you change backend code, run `bash scripts/dev-up.sh --build -d` or use the rebuild sequence above.

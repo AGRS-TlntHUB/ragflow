@@ -17,6 +17,7 @@ export const MetadataFilterSchema = {
     .object({
       logic: z.string().optional(),
       method: z.string().optional(),
+      restrict_format: z.boolean().optional(),
       manual: z
         .array(
           z.object({
@@ -33,6 +34,7 @@ export const MetadataFilterSchema = {
             z.object({
               key: z.string(),
               op: z.string().optional(),
+              format: z.string().optional(),
             }),
           ]),
         )

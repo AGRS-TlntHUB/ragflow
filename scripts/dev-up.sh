@@ -5,7 +5,27 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$ROOT_DIR/.run"
 PID_FILE="$RUN_DIR/vite-dev.pid"
 LOG_FILE="$RUN_DIR/vite-dev.log"
-DAEMON_MODE="${1:-}"
+COMPOSE_FILE="docker/docker-compose.yml"
+RAGFLOW_IMAGE="$(awk -F= '/^RAGFLOW_IMAGE=/{print $2}' "$ROOT_DIR/docker/.env")"
+DAEMON_MODE=""
+BUILD_IMAGE=0
+
+while (($#)); do
+  case "$1" in
+    -d)
+      DAEMON_MODE="-d"
+      ;;
+    --build|--rebuild)
+      BUILD_IMAGE=1
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      echo "Usage: $0 [--build] [-d]" >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
 
 if [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
   # shellcheck disable=SC1091
@@ -13,7 +33,20 @@ if [ -f "$ROOT_DIR/.venv/bin/activate" ]; then
 fi
 
 cd "$ROOT_DIR"
-docker compose -f docker/docker-compose.yml up -d mysql redis minio infinity ragflow-cpu
+
+if [ -z "$RAGFLOW_IMAGE" ]; then
+  echo "RAGFLOW_IMAGE is not set in docker/.env" >&2
+  exit 1
+fi
+
+echo "Using RAGFlow image: $RAGFLOW_IMAGE"
+
+if [ "$BUILD_IMAGE" -eq 1 ]; then
+  docker build --platform linux/amd64 -f Dockerfile -t "$RAGFLOW_IMAGE" .
+  docker compose -f "$COMPOSE_FILE" up -d --force-recreate mysql redis minio infinity ragflow-cpu
+else
+  docker compose -f "$COMPOSE_FILE" up -d mysql redis minio infinity ragflow-cpu
+fi
 
 cd "$ROOT_DIR/web"
 if [ ! -d node_modules ]; then

@@ -633,6 +633,7 @@ async def run():
                     has_unfinished_task = any((task.progress or 0) < 1 for task in tasks)
                     if str(doc.run) in [TaskStatus.RUNNING.value, TaskStatus.CANCEL.value] or has_unfinished_task:
                         cancel_all_task_of(id)
+                        TaskService.filter_delete([Task.doc_id == id, Task.progress < 1])
                     else:
                         return get_data_error_result(message="Cannot cancel a task that is not in RUNNING status")
                 if all([("delete" not in req or req["delete"]), str(req["run"]) == TaskStatus.RUNNING.value, str(doc.run) == TaskStatus.DONE.value]):

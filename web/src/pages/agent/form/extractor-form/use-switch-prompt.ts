@@ -9,6 +9,7 @@ import { ExtractorMode } from '../../constant/pipeline';
 export const FormSchema = z.object({
   field_name: z.string(),
   mode: z.enum([ExtractorMode.LanguageModel, ExtractorMode.RegularExpressions]),
+  title_page_only: z.boolean().optional(),
   sys_prompt: z.string().optional(),
   prompts: z.string().optional(),
   ...LlmSettingSchema,

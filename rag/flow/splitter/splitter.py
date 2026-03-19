@@ -19,6 +19,7 @@ import re
 from copy import deepcopy
 from functools import partial
 from common.misc_utils import get_uuid
+from common.token_utils import num_tokens_from_string
 from rag.utils.base64_image import id2image, image2id
 from deepdoc.parser.pdf_parser import RAGFlowPdfParser
 from rag.flow.base import ProcessBase, ProcessParamBase
@@ -34,6 +35,7 @@ class SplitterParam(ProcessParamBase):
         self.chunk_token_size = 512
         self.delimiters = ["\n"]
         self.overlapped_percent = 0
+        self.chunk_per_page_first = False
         self.children_delimiters = []
         self.table_context_size = 0
         self.image_context_size = 0
@@ -51,6 +53,81 @@ class SplitterParam(ProcessParamBase):
 
 class Splitter(ProcessBase):
     component_name = "Splitter"
+
+    @staticmethod
+    def _coerce_page_number(value):
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            return int(value)
+        if isinstance(value, str):
+            matched = re.search(r"\d+", value)
+            if matched:
+                return int(matched.group(0))
+        return None
+
+    def _get_page_number(self, item: dict):
+        page_number = self._coerce_page_number(item.get("page_number"))
+        if page_number is not None:
+            return page_number
+
+        positions = item.get("positions")
+        if isinstance(positions, list):
+            for pos in positions:
+                if isinstance(pos, (list, tuple)) and pos:
+                    page_number = self._coerce_page_number(pos[0])
+                    if page_number is not None:
+                        return page_number
+
+        position_tag = item.get("position_tag")
+        if isinstance(position_tag, str) and position_tag:
+            try:
+                extracted_positions = RAGFlowPdfParser.extract_positions(position_tag)
+                if extracted_positions:
+                    return self._coerce_page_number(extracted_positions[0][0][-1])
+            except Exception:
+                return None
+        return None
+
+    def _merge_json_sections(self, sections, section_images, chunk_size, deli, overlapped_percent):
+        chunks, images = naive_merge_with_images(
+            sections,
+            section_images,
+            chunk_size,
+            deli,
+            overlapped_percent,
+        )
+        return [
+            {
+                "text": RAGFlowPdfParser.remove_tag(c),
+                "image": img,
+                "positions": [[pos[0][-1], *pos[1:]] for pos in RAGFlowPdfParser.extract_positions(c)],
+            }
+            for c, img in zip(chunks, images)
+            if c.strip()
+        ]
+
+    def _rechunk_oversized_page_chunks(self, chunks, chunk_size, deli, overlapped_percent):
+        rechunked = []
+        for chunk in chunks:
+            text = chunk.get("text", "")
+            if num_tokens_from_string(text) <= chunk_size:
+                rechunked.append(chunk)
+                continue
+
+            split_chunks = naive_merge(text, chunk_size, deli, overlapped_percent)
+            if len(split_chunks) <= 1:
+                rechunked.append(chunk)
+                continue
+
+            for split_text in split_chunks:
+                split_text = split_text.strip()
+                if not split_text:
+                    continue
+                updated = deepcopy(chunk)
+                updated["text"] = split_text
+                rechunked.append(updated)
+        return rechunked
 
     async def _invoke(self, **kwargs):
         try:
@@ -125,22 +202,54 @@ class Splitter(ProcessBase):
         for o in json_result:
             sections.append((o.get("text", ""), o.get("position_tag", "")))
             section_images.append(id2image(o.get("img_id"), partial(settings.STORAGE_IMPL.get, tenant_id=self._canvas._tenant_id)))
+        cks = []
 
-        chunks, images = naive_merge_with_images(
-            sections,
-            section_images,
-            self._param.chunk_token_size,
-            deli,
-            overlapped_percent,
-        )
-        cks = [
-            {
-                "text": RAGFlowPdfParser.remove_tag(c),
-                "image": img,
-                "positions": [[pos[0][-1], *pos[1:]] for pos in RAGFlowPdfParser.extract_positions(c)]
-            }
-            for c, img in zip(chunks, images) if c.strip()
-        ]
+        if self._param.chunk_per_page_first:
+            grouped_sections = {}
+            grouped_images = {}
+            has_page_info = False
+            for idx, section in enumerate(sections):
+                page_number = self._get_page_number(json_result[idx])
+                if page_number is not None:
+                    has_page_info = True
+                group_key = page_number if page_number is not None else f"unknown_{idx}"
+                grouped_sections.setdefault(group_key, []).append(section)
+                grouped_images.setdefault(group_key, []).append(section_images[idx])
+
+            if has_page_info:
+                for group_key in grouped_sections:
+                    cks.extend(
+                        self._merge_json_sections(
+                            grouped_sections[group_key],
+                            grouped_images[group_key],
+                            self._param.chunk_token_size,
+                            deli,
+                            overlapped_percent,
+                        )
+                    )
+                cks = self._rechunk_oversized_page_chunks(
+                    cks,
+                    self._param.chunk_token_size,
+                    deli,
+                    overlapped_percent,
+                )
+            else:
+                cks = self._merge_json_sections(
+                    sections,
+                    section_images,
+                    self._param.chunk_token_size,
+                    deli,
+                    overlapped_percent,
+                )
+        else:
+            cks = self._merge_json_sections(
+                sections,
+                section_images,
+                self._param.chunk_token_size,
+                deli,
+                overlapped_percent,
+            )
+
         tasks = []
         for d in cks:
             tasks.append(asyncio.create_task(image2id(d, partial(settings.STORAGE_IMPL.put, tenant_id=self._canvas._tenant_id), get_uuid())))

@@ -248,6 +248,11 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
         fieldName: 'Field name',
         editMetadata: 'Edit metadata',
         addMetadata: 'Add metadata',
+        clearAllMetadata: 'Clear all metadata',
+        clearAllMetadataConfirmTitle:
+          'Clear metadata from all documents in this dataset?',
+        clearAllMetadataConfirmContent:
+          'This action removes all metadata fields and values from every document and cannot be undone.',
         deleteWarn: 'This {{field}} will be removed from all associated files',
         deleteManageFieldAllWarn:
           'This field and all its corresponding values will be deleted from all associated files.',
@@ -937,6 +942,9 @@ This auto-tagging feature enhances retrieval by adding another layer of domain-s
         'Metadata filtering is the process of using metadata attributes (such as tags, categories, or access permissions) to refine and control the retrieval of relevant information within a system.',
       conditions: 'Conditions',
       metadataKeys: 'Filterable items',
+      restrictMetadataValueFormat: 'Restrict metadata value format',
+      metadataValueFormatPlaceholder:
+        'Format, e.g. <PREFIX> <NNN>/<YYYY> or [A-Z]{2,4} [0-9]{3}/[0-9]{4}',
       addCondition: 'Add condition',
       meta: {
         disabled: 'Disabled',
@@ -1548,6 +1556,12 @@ Example: Virtual Hosted Style`,
       tab: 'Tab',
       space: 'Space',
       delimiters: 'Delimiters',
+      chunkPerPageFirst: 'Chunk per-page first',
+      chunkPerPageFirstTip:
+        'Split chunking by page boundaries first. This keeps chunks from crossing page boundaries when page metadata is available.',
+      rechunkOversizedPageChunks: 'Re-chunk oversized page chunks',
+      rechunkOversizedPageChunksTip:
+        'After page-first chunking, re-apply regular chunking to page chunks that still exceed the configured chunk size.',
       enableChildrenDelimiters: 'Child chunk are used for retrieval',
       merge: 'Merge',
       split: 'Split',
@@ -2279,6 +2293,7 @@ The Indexer will store the content in the corresponding data structures for the 
       },
       metadataField: 'Metadata field',
       addMetadataField: 'Add metadata field',
+      titlePageOnly: 'Title page only',
       prompts: {
         system: {
           keywords: `Role

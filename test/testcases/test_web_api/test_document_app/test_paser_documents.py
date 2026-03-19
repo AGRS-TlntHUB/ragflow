@@ -257,17 +257,25 @@ class TestDocumentsParseUnit:
         assert res["code"] == module.RetCode.DATA_ERROR
         assert "Cannot cancel a task that is not in RUNNING status" in res["message"]
 
+        monkeypatch.setattr(module.TaskService, "query", lambda **_kwargs: [SimpleNamespace(progress=0.5)])
+        monkeypatch.setattr(module.TaskService, "filter_delete", lambda _filters: calls["filter_delete"].append("cancel"))
+        monkeypatch.setattr(module.DocumentService, "update_by_id", lambda *_args, **_kwargs: True)
+        res = _run(module.run.__wrapped__())
+        assert res["code"] == 0
+        assert calls["cancel"] == ["doc1"]
+        assert calls["filter_delete"] == ["cancel"]
+
         apply_request({"doc_ids": ["doc1"], "run": module.TaskStatus.RUNNING.value, "delete": True})
         doc_rerun = SimpleNamespace(id="doc1", run=module.TaskStatus.DONE.value, kb_id="kb1", parser_config={}, to_dict=lambda: {"id": "doc1"})
         monkeypatch.setattr(module.DocumentService, "get_by_id", lambda _doc_id: (True, doc_rerun))
         monkeypatch.setattr(module.DocumentService, "clear_chunk_num_when_rerun", lambda doc_id: calls["clear"].append(doc_id))
-        monkeypatch.setattr(module.TaskService, "filter_delete", lambda _filters: calls["filter_delete"].append(True))
+        monkeypatch.setattr(module.TaskService, "filter_delete", lambda _filters: calls["filter_delete"].append("rerun"))
         monkeypatch.setattr(module.DocumentService, "update_by_id", lambda *_args, **_kwargs: True)
         monkeypatch.setattr(module.DocumentService, "run", lambda tenant_id, doc_dict, _kb_map: calls["run"].append((tenant_id, doc_dict)))
         res = _run(module.run.__wrapped__())
         assert res["code"] == 0
         assert calls["clear"] == ["doc1"]
-        assert calls["filter_delete"] == [True]
+        assert calls["filter_delete"] == ["cancel", "rerun"]
         assert calls["docstore_delete"] == ["doc1"]
         assert calls["run"] == [("tenant1", {"id": "doc1"})]
 

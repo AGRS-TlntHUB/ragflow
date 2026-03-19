@@ -507,11 +507,19 @@ def reuse_prev_task_chunks(task: dict, prev_tasks: list[dict], chunking_config: 
 
 
 def cancel_all_task_of(doc_id):
+    task_ids = []
     for t in TaskService.query(doc_id=doc_id):
+        task_ids.append(t.id)
         try:
             REDIS_CONN.set(f"{t.id}-cancel", "x")
         except Exception as e:
             logging.exception(e)
+    try:
+        removed = REDIS_CONN.remove_task_messages(settings.get_svr_queue_names(), task_ids)
+        if removed:
+            logging.info(f"Removed {removed} queued task messages for document {doc_id}")
+    except Exception as e:
+        logging.exception(e)
 
 
 def has_canceled(task_id):

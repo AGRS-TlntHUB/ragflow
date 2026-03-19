@@ -26,6 +26,7 @@ async def test_apply_meta_data_filter_semi_auto_key():
         mock_gen.assert_called_once()
         args, kwargs = mock_gen.call_args
         assert kwargs["constraints"] == {}
+        assert kwargs["formats"] == {}
 
 @pytest.mark.asyncio
 async def test_apply_meta_data_filter_semi_auto_key_and_operator():
@@ -51,3 +52,30 @@ async def test_apply_meta_data_filter_semi_auto_key_and_operator():
         mock_gen.assert_called_once()
         args, kwargs = mock_gen.call_args
         assert kwargs["constraints"] == {"key1": ">"}
+        assert kwargs["formats"] == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_meta_data_filter_semi_auto_with_format():
+    meta_data_filter = {
+        "method": "semi_auto",
+        "restrict_format": True,
+        "semi_auto": [{"key": "case_id", "format": "<PREFIX> <NNN>/<YYYY>"}],
+    }
+    metas = {
+        "case_id": {"AB 123/2024": ["doc1"]},
+    }
+    question = "find case AB 123/2024"
+
+    chat_mdl = MagicMock()
+
+    with patch("rag.prompts.generator.gen_meta_filter", new_callable=AsyncMock) as mock_gen:
+        mock_gen.return_value = {"conditions": [{"key": "case_id", "op": "=", "value": "AB 123/2024"}], "logic": "and"}
+
+        doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl)
+        assert doc_ids == ["doc1"]
+
+        mock_gen.assert_called_once()
+        args, kwargs = mock_gen.call_args
+        assert kwargs["constraints"] == {}
+        assert kwargs["formats"] == {"case_id": "<PREFIX> <NNN>/<YYYY>"}
