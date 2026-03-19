@@ -8,15 +8,19 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { useNavigatePage } from '@/hooks/logic-hooks/navigate-hooks';
-import { useSetDocumentStatus } from '@/hooks/use-document-request';
+import {
+  useRunDocument,
+  useSetDocumentStatus,
+} from '@/hooks/use-document-request';
 import { IDocumentInfo } from '@/interfaces/database/document';
 import { cn } from '@/lib/utils';
 import { formatDate } from '@/utils/date';
 import { ColumnDef } from '@tanstack/table-core';
-import { ArrowUpDown } from 'lucide-react';
+import { ArrowUpDown, CircleX, RotateCcw } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { MetadataType } from '../components/metedata/constant';
 import { ShowManageMetadataModalProps } from '../components/metedata/interface';
+import { DocumentType, RunningStatus } from './constant';
 import { DatasetActionCell } from './dataset-action-cell';
 import { ParseDropdownButton, ParsingStatusCell } from './parsing-status-cell';
 import { UseChangeDocumentParserShowType } from './use-change-document-parser';
@@ -42,8 +46,24 @@ export function useDatasetTableColumns({
   // const { dataSourceInfo } = useDataSourceInfo();
   const { navigateToChunkParsedResult } = useNavigatePage();
   const { setDocumentStatus } = useSetDocumentStatus();
+  const { runDocumentByIds } = useRunDocument();
+  const runnableDocuments = documents.filter(
+    (doc) => doc.type !== DocumentType.Virtual,
+  );
   const enabledDocumentIds = documents
     .filter((doc) => doc.status === '1')
+    .map((doc) => doc.id);
+  const runningDocumentIds = runnableDocuments
+    .filter(
+      (doc) =>
+        doc.run === RunningStatus.RUNNING || doc.run === RunningStatus.SCHEDULE,
+    )
+    .map((doc) => doc.id);
+  const rerunDocumentIds = runnableDocuments
+    .filter(
+      (doc) =>
+        doc.run !== RunningStatus.RUNNING && doc.run !== RunningStatus.SCHEDULE,
+    )
     .map((doc) => doc.id);
   const allDocumentIds = documents.map((doc) => doc.id);
   const allEnabled =
@@ -269,7 +289,46 @@ export function useDatasetTableColumns({
     },
     {
       id: 'run-status',
-      header: '',
+      header: () => (
+        <div className="flex justify-center gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                disabled={rerunDocumentIds.length === 0}
+                onClick={() =>
+                  runDocumentByIds({
+                    documentIds: rerunDocumentIds,
+                    run: 1,
+                  })
+                }
+              >
+                <RotateCcw className="text-accent-primary" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('run')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                disabled={runningDocumentIds.length === 0}
+                onClick={() =>
+                  runDocumentByIds({
+                    documentIds: runningDocumentIds,
+                    run: 2,
+                  })
+                }
+              >
+                <CircleX className="text-state-error" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('cancel')}</TooltipContent>
+          </Tooltip>
+        </div>
+      ),
       cell: ({ row }) => {
         return (
           <ParsingStatusCell

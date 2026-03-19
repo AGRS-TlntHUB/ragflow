@@ -88,6 +88,11 @@ export enum ContextGeneratorFieldName {
   TableOfContents = 'toc',
 }
 
+export enum ExtractorMode {
+  LanguageModel = 'llm',
+  RegularExpressions = 'regex',
+}
+
 export const FileId = 'File'; // BeginId
 
 export enum TokenizerSearchMethod {
@@ -255,7 +260,10 @@ export const initialHierarchicalMergerValues = {
 
 export const initialExtractorValues = {
   ...initialLlmBaseValues,
+  mode: ExtractorMode.LanguageModel,
   field_name: ContextGeneratorFieldName.Summary,
+  keyword_regexes: [{ expression: '' }],
+  metadata_regexes: [{ key: '', expressions: [{ expression: '' }] }],
   outputs: {
     chunks: { type: 'Array<Object>', value: [] },
   },

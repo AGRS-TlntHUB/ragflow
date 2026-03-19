@@ -2272,6 +2272,13 @@ The Indexer will store the content in the corresponding data structures for the 
       metadata: 'Metadata',
       toc: 'PageIndex',
       fieldName: 'Result destination',
+      extractionMode: 'Mode',
+      extractorModes: {
+        languageModel: 'Language model',
+        regularExpressions: 'Regular expressions',
+      },
+      metadataField: 'Metadata field',
+      addMetadataField: 'Add metadata field',
       prompts: {
         system: {
           keywords: `Role

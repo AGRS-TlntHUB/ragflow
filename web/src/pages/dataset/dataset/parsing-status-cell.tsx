@@ -117,6 +117,8 @@ export function ParsingStatusCell({
   } = useHandleRunDocumentByIds(id);
   const isRunning = isParserRunning(run);
   const isZeroChunk = chunk_num === 0;
+  const shouldBypassReparseDialog =
+    (isZeroChunk && !record?.parser_config?.enable_metadata) || isRunning;
 
   const handleOperationIconClick = (option?: {
     delete: boolean;
@@ -156,7 +158,13 @@ export function ParsingStatusCell({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                onClick={() => showReparseDialogModal()}
+                onClick={() => {
+                  if (shouldBypassReparseDialog) {
+                    handleOperationIconClick();
+                    return;
+                  }
+                  showReparseDialogModal();
+                }}
                 // onClick={
                 //   isZeroChunk || isRunning
                 //     ? handleOperationIconClick(false)
@@ -172,6 +180,10 @@ export function ParsingStatusCell({
                 variant="ghost"
                 size="icon-xs"
                 onClick={() => {
+                  if (shouldBypassReparseDialog) {
+                    handleOperationIconClick();
+                    return;
+                  }
                   showReparseDialogModal();
                 }}
               >
@@ -185,10 +197,7 @@ export function ParsingStatusCell({
       )}
       {reparseDialogVisible && (
         <ReparseDialog
-          hidden={
-            (isZeroChunk && !record?.parser_config?.enable_metadata) ||
-            isRunning
-          }
+          hidden={shouldBypassReparseDialog}
           // hidden={false}
           enable_metadata={record?.parser_config?.enable_metadata}
           handleOperationIconClick={handleOperationIconClick}

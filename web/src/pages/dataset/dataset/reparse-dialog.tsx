@@ -33,19 +33,6 @@ export const ReparseDialog = memo(
     const [defaultValues, setDefaultValues] = useState<any>(null);
     const [fields, setFields] = useState<FormFieldConfig[]>([]);
     const { t } = useTranslation();
-    const handleOperationIconClickRef = useRef(handleOperationIconClick);
-    const hiddenRef = useRef(hidden);
-
-    useEffect(() => {
-      handleOperationIconClickRef.current = handleOperationIconClick;
-      hiddenRef.current = hidden;
-    });
-
-    useEffect(() => {
-      if (hiddenRef.current) {
-        handleOperationIconClickRef.current();
-      }
-    }, []);
     useEffect(() => {
       setDefaultValues({
         delete: chunk_num > 0,

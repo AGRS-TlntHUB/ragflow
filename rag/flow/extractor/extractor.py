@@ -15,10 +15,14 @@
 import json
 import logging
 import random
+import re
 from copy import deepcopy
 
 import xxhash
 
+from api.db.joint_services.tenant_model_service import get_model_config_by_type_and_name
+from api.db.services.llm_service import LLMBundle
+from api.db.services.tenant_llm_service import TenantLLMService
 from agent.component.llm import LLMParam, LLM
 from rag.flow.base import ProcessBase, ProcessParamBase
 from rag.prompts.generator import run_toc_from_text
@@ -27,15 +31,50 @@ from rag.prompts.generator import run_toc_from_text
 class ExtractorParam(ProcessParamBase, LLMParam):
     def __init__(self):
         super().__init__()
+        self.mode = "llm"
         self.field_name = ""
+        self.keyword_regexes = []
+        self.metadata_regexes = []
 
     def check(self):
-        super().check()
         self.check_empty(self.field_name, "Result Destination")
+        if self.mode == "regex":
+            self.check_valid_value(self.field_name, "Result Destination", ["metadata", "keywords"])
+            if self.field_name == "metadata":
+                self.check_empty(self.metadata_regexes, "Metadata regular expressions")
+                for item in self.metadata_regexes:
+                    key = item.get("key", "") if isinstance(item, dict) else ""
+                    expressions = item.get("expressions", []) if isinstance(item, dict) else []
+                    self.check_empty(key, "Metadata field key")
+                    self.check_empty(expressions, f"Regular expressions for metadata field `{key}`")
+            else:
+                self.check_empty(self.keyword_regexes, "Keyword regular expressions")
+            return
+
+        super().check()
 
 
 class Extractor(ProcessBase, LLM):
     component_name = "Extractor"
+
+    def __init__(self, canvas, component_id, param: ExtractorParam):
+        ProcessBase.__init__(self, canvas, component_id, param)
+        self.chat_mdl = None
+        self.imgs = []
+        if self._param.mode == "regex":
+            return
+
+        chat_model_config = get_model_config_by_type_and_name(
+            self._canvas.get_tenant_id(),
+            TenantLLMService.llm_id2llm_type(self._param.llm_id),
+            self._param.llm_id,
+        )
+        self.chat_mdl = LLMBundle(
+            self._canvas.get_tenant_id(),
+            chat_model_config,
+            max_retries=self._param.max_retries,
+            retry_interval=self._param.delay_after_error,
+        )
 
     async def _build_TOC(self, docs):
         self.callback(0.2,message="Start to generate table of content ...")
@@ -70,6 +109,84 @@ class Extractor(ProcessBase, LLM):
             return d
         return None
 
+    @staticmethod
+    def _normalize_regex_matches(matches):
+        normalized = []
+        for match in matches:
+            if isinstance(match, tuple):
+                values = [str(item) for item in match if item not in [None, ""]]
+                if values:
+                    normalized.append(" ".join(values))
+                continue
+            if match in [None, ""]:
+                continue
+            normalized.append(str(match))
+        return normalized
+
+    @staticmethod
+    def _dedupe(values):
+        seen = set()
+        deduped = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            deduped.append(value)
+        return deduped
+
+    def _extract_keywords_by_regex(self, text):
+        keywords = []
+        for idx, expression in enumerate(self._param.keyword_regexes, start=1):
+            expression = expression.get("expression", "") if isinstance(expression, dict) else expression
+            matches = []
+            try:
+                matches = self._normalize_regex_matches(re.findall(expression, text, re.MULTILINE))
+            except Exception as exc:
+                logging.warning("Invalid keyword regex `%s`: %s", expression, exc)
+            self.callback(
+                0.1,
+                f'Regex [{idx}] for keywords found [{len(matches)}] matches.',
+            )
+            keywords.extend(matches)
+        keywords = self._dedupe(keywords)
+        return ",".join(keywords)
+
+    def _extract_metadata_by_regex(self, text):
+        metadata = {}
+        for item in self._param.metadata_regexes:
+            key = item.get("key", "")
+            expressions = item.get("expressions", [])
+            values = []
+            for idx, expression in enumerate(expressions, start=1):
+                expression = expression.get("expression", "") if isinstance(expression, dict) else expression
+                matches = []
+                try:
+                    matches = self._normalize_regex_matches(re.findall(expression, text, re.MULTILINE))
+                except Exception as exc:
+                    logging.warning(
+                        "Invalid metadata regex `%s` for field `%s`: %s",
+                        expression,
+                        key,
+                        exc,
+                    )
+                self.callback(
+                    0.1,
+                    f'Regex [{idx}] for metadata field "{key}" found [{len(matches)}] matches.',
+                )
+                values.extend(matches)
+            values = self._dedupe(values)
+            if values:
+                metadata[key] = values if len(values) > 1 else values[0]
+        return metadata
+
+    def _extract_by_regex(self, text):
+        txt = "" if text is None else str(text)
+        if self._param.field_name == "metadata":
+            return self._extract_metadata_by_regex(txt)
+        if self._param.field_name == "keywords":
+            return self._extract_keywords_by_regex(txt)
+        return ""
+
     async def _invoke(self, **kwargs):
         self.set_output("output_format", "chunks")
         self.callback(random.randint(1, 5) / 100.0, "Start to generate.")
@@ -93,6 +210,19 @@ class Extractor(ProcessBase, LLM):
                 self.set_output("chunks", chunks)
                 return
 
+            if self._param.mode == "regex":
+                for i, ck in enumerate(chunks):
+                    extracted = self._extract_by_regex(ck.get("text", ""))
+                    if self._param.field_name == "keywords" and not extracted:
+                        ck.pop("keywords", None)
+                    else:
+                        ck[self._param.field_name] = extracted
+                    prog = (i + 1.0) / len(chunks)
+                    if i % (len(chunks)//100+1) == 1:
+                        self.callback(prog, f"{i+1} / {len(chunks)}")
+                self.set_output("chunks", chunks)
+                return
+
             prog = 0
             for i, ck in enumerate(chunks):
                 args[chunks_key] = ck["text"]
@@ -104,6 +234,14 @@ class Extractor(ProcessBase, LLM):
                     self.callback(prog, f"{i+1} / {len(chunks)}")
             self.set_output("chunks", chunks)
         else:
+            if self._param.mode == "regex":
+                plain_text = "\n".join([str(v) for v in args.values() if isinstance(v, (str, int, float))])
+                extracted = self._extract_by_regex(plain_text)
+                if self._param.field_name == "keywords" and not extracted:
+                    self.set_output("chunks", [{}])
+                else:
+                    self.set_output("chunks", [{self._param.field_name: extracted}])
+                return
             msg, sys_prompt = self._sys_prompt_and_msg([], args)
             msg.insert(0, {"role": "system", "content": sys_prompt})
             self.set_output("chunks", [{self._param.field_name: await self._generate_async(msg)}])

@@ -4,10 +4,12 @@ import { useCallback, useRef } from 'react';
 import { UseFormReturn } from 'react-hook-form';
 import { useTranslation } from 'react-i18next';
 import { z } from 'zod';
+import { ExtractorMode } from '../../constant/pipeline';
 
 export const FormSchema = z.object({
   field_name: z.string(),
-  sys_prompt: z.string(),
+  mode: z.enum([ExtractorMode.LanguageModel, ExtractorMode.RegularExpressions]),
+  sys_prompt: z.string().optional(),
   prompts: z.string().optional(),
   ...LlmSettingSchema,
 });

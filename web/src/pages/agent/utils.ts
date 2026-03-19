@@ -317,7 +317,32 @@ function transformHierarchicalMergerParams(
 }
 
 function transformExtractorParams(params: ExtractorFormSchemaType) {
-  return { ...params, prompts: [{ content: params.prompts, role: 'user' }] };
+  const keywordRegexes = (params.keyword_regexes || [])
+    .map((item) => item.expression)
+    .filter(Boolean);
+  const metadataRegexes = (params.metadata_regexes || [])
+    .map((item) => ({
+      key: item.key,
+      expressions: (item.expressions || [])
+        .map((expression) => expression.expression)
+        .filter(Boolean),
+    }))
+    .filter((item) => item.key || item.expressions.length > 0);
+
+  if (params.mode === 'regex') {
+    return {
+      ...params,
+      keyword_regexes: keywordRegexes,
+      metadata_regexes: metadataRegexes,
+    };
+  }
+
+  return {
+    ...params,
+    prompts: [{ content: params.prompts, role: 'user' }],
+    keyword_regexes: keywordRegexes,
+    metadata_regexes: metadataRegexes,
+  };
 }
 
 function transformDataOperationsParams(params: DataOperationsFormSchemaType) {
