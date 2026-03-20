@@ -23,7 +23,7 @@ from common.decorator import singleton
 import pandas as pd
 from common.constants import PAGERANK_FLD, TAG_FLD
 from common.doc_store.doc_store_base import MatchExpr, MatchTextExpr, MatchDenseExpr, FusionExpr, OrderByExpr
-from common.doc_store.infinity_conn_base import InfinityConnectionBase
+from common.doc_store.infinity_conn_base import InfinityConnectionBase, sanitize_for_infinity
 
 
 @singleton
@@ -177,7 +177,8 @@ class InfinityConnection(InfinityConnectionBase):
                         matchExpr.extra_options.update({"filter": filter_cond})
                     matchExpr.fields = [self.convert_matching_field(field) for field in matchExpr.fields]
                     fields = ",".join(matchExpr.fields)
-                    filter_fulltext = f"filter_fulltext('{fields}', '{matchExpr.matching_text}')"
+                    safe_text = sanitize_for_infinity(matchExpr.matching_text)
+                    filter_fulltext = f"filter_fulltext('{fields}', '{safe_text}')"
                     if filter_cond:
                         filter_fulltext = f"({filter_cond}) AND {filter_fulltext}"
                     minimum_should_match = matchExpr.extra_options.get("minimum_should_match", 0.0)

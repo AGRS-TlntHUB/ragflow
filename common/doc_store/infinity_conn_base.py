@@ -32,6 +32,18 @@ from common import settings
 from common.doc_store.doc_store_base import DocStoreConnection, MatchExpr, OrderByExpr
 
 
+def sanitize_for_infinity(text: str) -> str:
+    """Sanitize a fulltext query string for safe embedding in Infinity SQL.
+
+    Handles: single-quote escaping for the SQL wrapper, and stripping
+    apostrophes/smart-quotes inside double-quoted phrases so the fulltext
+    tokenizer never sees unbalanced quotes.
+    """
+    text = text.replace("'", "''")
+    text = re.sub(r'"([^"]*)"', lambda m: '"' + m.group(1).replace("'", "").replace("'", "").replace("\u2019", "") + '"', text)
+    return text
+
+
 class InfinityConnectionBase(DocStoreConnection):
     def __init__(self, mapping_file_name: str = "infinity_mapping.json", logger_name: str = "ragflow.infinity_conn", table_name_prefix: str="ragflow_"):
         from common.doc_store.infinity_conn_pool import INFINITY_CONN
@@ -180,14 +192,15 @@ class InfinityConnectionBase(DocStoreConnection):
                     inCond = list()
                     for item in v:
                         if isinstance(item, str):
-                            item = item.replace("'", "''")
+                            item = sanitize_for_infinity(item)
                         inCond.append(f"filter_fulltext('{self.convert_matching_field(k)}', '{item}')")
                     if inCond:
                         strInCond = " or ".join(inCond)
                         strInCond = f"({strInCond})"
                         cond.append(strInCond)
                 else:
-                    cond.append(f"filter_fulltext('{self.convert_matching_field(k)}', '{v}')")
+                    safe_v = sanitize_for_infinity(v) if isinstance(v, str) else v
+                    cond.append(f"filter_fulltext('{self.convert_matching_field(k)}', '{safe_v}')")
             elif isinstance(v, list):
                 inCond = list()
                 for item in v:
