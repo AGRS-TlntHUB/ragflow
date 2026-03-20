@@ -45,6 +45,14 @@ class _DummyRetCode:
     AUTHENTICATION_ERROR = 109
 
 
+class _DummyStatusEnum:
+    class VALID:
+        value = "1"
+
+    class INVALID:
+        value = "0"
+
+
 def _run(coro):
     return asyncio.run(coro)
 
@@ -75,6 +83,9 @@ def _load_evaluation_app(monkeypatch):
 
     quart_mod = ModuleType("quart")
     quart_mod.request = SimpleNamespace(args=_Args())
+    async def _send_file(file, **kwargs):
+        return {"file": file, "kwargs": kwargs}
+    quart_mod.send_file = _send_file
     monkeypatch.setitem(sys.modules, "quart", quart_mod)
 
     common_pkg = ModuleType("common")
@@ -83,6 +94,7 @@ def _load_evaluation_app(monkeypatch):
 
     constants_mod = ModuleType("common.constants")
     constants_mod.RetCode = _DummyRetCode
+    constants_mod.StatusEnum = _DummyStatusEnum
     monkeypatch.setitem(sys.modules, "common.constants", constants_mod)
     common_pkg.constants = constants_mod
 
@@ -109,6 +121,22 @@ def _load_evaluation_app(monkeypatch):
     evaluation_service_mod = ModuleType("api.db.services.evaluation_service")
 
     class _EvaluationService:
+        @staticmethod
+        def list_eval_type_scripts(**_kwargs):
+            return []
+
+        @staticmethod
+        def list_eval_templates(**_kwargs):
+            return []
+
+        @staticmethod
+        def create_eval_template(**_kwargs):
+            return True, "tpl-1"
+
+        @staticmethod
+        def delete_eval_template(**_kwargs):
+            return True
+
         @staticmethod
         def create_dataset(**_kwargs):
             return True, "dataset-1"
@@ -157,6 +185,18 @@ def _load_evaluation_app(monkeypatch):
         def get_recommendations(_run_id):
             return []
 
+        @staticmethod
+        def list_runs(**_kwargs):
+            return {"runs": [], "total": 0}
+
+        @staticmethod
+        def get_run_artifact(_run_id, _artifact_type):
+            return True, {
+                "path": "/tmp/submission_run-1.json",
+                "filename": "submission_run-1.json",
+                "mimetype": "application/json",
+            }
+
     evaluation_service_mod.EvaluationService = _EvaluationService
     monkeypatch.setitem(sys.modules, "api.db.services.evaluation_service", evaluation_service_mod)
 
@@ -200,6 +240,102 @@ def _load_evaluation_app(monkeypatch):
     monkeypatch.setitem(sys.modules, module_name, module)
     spec.loader.exec_module(module)
     return module
+
+
+@pytest.mark.p2
+def test_template_routes_matrix_unit(monkeypatch):
+    module = _load_evaluation_app(monkeypatch)
+
+    monkeypatch.setattr(
+        module.EvaluationService,
+        "list_eval_type_scripts",
+        lambda **_kwargs: [{"eval_type": "Single-Shot Chat", "script_path": "ragflow/evals/single_shot_chat.py"}],
+    )
+    res = _run(module.list_eval_template_types())
+    assert res["code"] == 0
+    assert res["data"]["types"][0]["eval_type"] == "Single-Shot Chat"
+
+    def _raise_type(**_kwargs):
+        raise RuntimeError("types boom")
+
+    monkeypatch.setattr(module.EvaluationService, "list_eval_type_scripts", _raise_type)
+    res = _run(module.list_eval_template_types())
+    assert res["code"] == module.RetCode.EXCEPTION_ERROR
+    assert "types boom" in res["message"]
+
+    monkeypatch.setattr(
+        module.EvaluationService,
+        "list_eval_templates",
+        lambda **_kwargs: [{"id": "tpl-1"}],
+    )
+    res = _run(module.list_eval_templates())
+    assert res["code"] == 0
+    assert res["data"]["total"] == 1
+    assert res["data"]["templates"][0]["id"] == "tpl-1"
+
+    def _raise_list(**_kwargs):
+        raise RuntimeError("list tpl boom")
+
+    monkeypatch.setattr(module.EvaluationService, "list_eval_templates", _raise_list)
+    res = _run(module.list_eval_templates())
+    assert res["code"] == module.RetCode.EXCEPTION_ERROR
+    assert "list tpl boom" in res["message"]
+
+    _set_request_json(monkeypatch, module, {"eval_type": "", "dataset_id": "kb-1", "dataset_path": "/tmp/a.json"})
+    res = _run(module.create_eval_template())
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "eval_type" in res["message"]
+
+    _set_request_json(monkeypatch, module, {"eval_type": "Single-Shot Chat", "dataset_id": "", "dataset_path": "/tmp/a.json"})
+    res = _run(module.create_eval_template())
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "dataset_id" in res["message"]
+
+    _set_request_json(monkeypatch, module, {"eval_type": "Single-Shot Chat", "dataset_id": "kb-1", "dataset_path": ""})
+    res = _run(module.create_eval_template())
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "dataset_path" in res["message"]
+
+    _set_request_json(
+        monkeypatch,
+        module,
+        {"eval_type": "Single-Shot Chat", "dataset_id": "kb-1", "dataset_path": "/tmp/a.json"},
+    )
+    monkeypatch.setattr(module.EvaluationService, "create_eval_template", lambda **_kwargs: (False, "create tpl failed"))
+    res = _run(module.create_eval_template())
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "create tpl failed" in res["message"]
+
+    monkeypatch.setattr(module.EvaluationService, "create_eval_template", lambda **_kwargs: (True, "tpl-ok"))
+    res = _run(module.create_eval_template())
+    assert res["code"] == 0
+    assert res["data"]["template_id"] == "tpl-ok"
+
+    def _raise_create(**_kwargs):
+        raise RuntimeError("create tpl boom")
+
+    monkeypatch.setattr(module.EvaluationService, "create_eval_template", _raise_create)
+    res = _run(module.create_eval_template())
+    assert res["code"] == module.RetCode.EXCEPTION_ERROR
+    assert "create tpl boom" in res["message"]
+
+    monkeypatch.setattr(module.EvaluationService, "delete_eval_template", lambda **_kwargs: False)
+    res = _run(module.delete_eval_template("tpl-1"))
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "failed" in res["message"].lower()
+
+    monkeypatch.setattr(module.EvaluationService, "delete_eval_template", lambda **_kwargs: True)
+    res = _run(module.delete_eval_template("tpl-2"))
+    assert res["code"] == 0
+    assert res["data"]["template_id"] == "tpl-2"
+
+    def _raise_delete(**_kwargs):
+        raise RuntimeError("delete tpl boom")
+
+    monkeypatch.setattr(module.EvaluationService, "delete_eval_template", _raise_delete)
+    res = _run(module.delete_eval_template("tpl-3"))
+    assert res["code"] == module.RetCode.EXCEPTION_ERROR
+    assert "delete tpl boom" in res["message"]
 
 
 @pytest.mark.p2
@@ -558,6 +694,50 @@ def test_compare_export_and_evaluate_single_matrix_unit(monkeypatch):
     res = _run(module.export_results("run-13"))
     assert res["code"] == module.RetCode.EXCEPTION_ERROR
     assert "export boom" in res["message"]
+
+    monkeypatch.setattr(module.EvaluationService, "get_run_artifact", lambda _run_id, _artifact_type: (False, {"message": "artifact failed"}))
+    res = _run(module.download_run_artifact("run-14", "submission"))
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "artifact failed" in res["message"]
+
+    class _FakePath:
+        def __init__(self, path):
+            self._path = path
+        def exists(self):
+            return False
+        def is_file(self):
+            return False
+        @property
+        def name(self):
+            return self._path.rsplit("/", 1)[-1]
+        def __str__(self):
+            return self._path
+
+    monkeypatch.setattr(module, "Path", _FakePath)
+    monkeypatch.setattr(module.EvaluationService, "get_run_artifact", lambda _run_id, _artifact_type: (True, {"path": "/tmp/missing.json", "filename": "missing.json", "mimetype": "application/json"}))
+    res = _run(module.download_run_artifact("run-15", "submission"))
+    assert res["code"] == module.RetCode.DATA_ERROR
+    assert "not found" in res["message"].lower()
+
+    class _FakePathExists(_FakePath):
+        def exists(self):
+            return True
+        def is_file(self):
+            return True
+
+    monkeypatch.setattr(module, "Path", _FakePathExists)
+    monkeypatch.setattr(module.EvaluationService, "get_run_artifact", lambda _run_id, _artifact_type: (True, {"path": "/tmp/submission_run-16.json", "filename": "submission_run-16.json", "mimetype": "application/json"}))
+    res = _run(module.download_run_artifact("run-16", "submission"))
+    assert res["file"] == "/tmp/submission_run-16.json"
+    assert res["kwargs"]["attachment_filename"] == "submission_run-16.json"
+
+    def _raise_artifact(_run_id, _artifact_type):
+        raise RuntimeError("artifact boom")
+
+    monkeypatch.setattr(module.EvaluationService, "get_run_artifact", _raise_artifact)
+    res = _run(module.download_run_artifact("run-17", "submission"))
+    assert res["code"] == module.RetCode.EXCEPTION_ERROR
+    assert "artifact boom" in res["message"]
 
     monkeypatch.setattr(module, "get_json_result", lambda code=0, message="success", data=None: {"code": code, "message": message, "data": data})
     res = _run(module.evaluate_single())

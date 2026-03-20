@@ -186,10 +186,11 @@ BULLET_PATTERN = [[
     r"[\(（][零一二三四五六七八九十百]+[\)）]",
     r"[\(（][0-9]{,2}[\)）]",
 ], [
-    r"PART (ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)",
-    r"Chapter (I+V?|VI*|XI|IX|X)",
-    r"Section [0-9]+",
-    r"Article [0-9]+"
+    r"(?i)(PART|SCHEDULE)\s+(\d+|ONE|TWO|THREE|FOUR|FIVE|SIX|SEVEN|EIGHT|NINE|TEN)",
+    r"(?i)CHAPTER\s+(\d+|I+V?|VI*|XI|IX|X)",
+    r"(?i)SECTION\s+[0-9]+",
+    r"(?i)ARTICLE\s+[0-9]+",
+    r"[0-9]{1,3}[A-Z]?\.\s+[A-Z]",
 ], [
     r"^#[^#]",
     r"^##[^#]",

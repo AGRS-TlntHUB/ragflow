@@ -63,9 +63,11 @@ const errorHandler = (error: {
     if (response && response.status) {
       const errorText =
         RetcodeMessage[response.status as ResultCode] || response.statusText;
-      const { status, url } = response;
+      const status = response.status;
+      const requestUrl =
+        (response as { config?: { url?: string } }).config?.url || '';
       notification.error({
-        message: `${i18n.t('message.requestError')} ${status}: ${url}`,
+        message: `${i18n.t('message.requestError')} ${status}: ${requestUrl}`,
         description: errorText,
       });
     }

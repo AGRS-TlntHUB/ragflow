@@ -43,6 +43,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template
       - ./entrypoint.sh:/ragflow/entrypoint.sh
+      - ../data_saved:/ragflow/data_saved
+      - ../data:/ragflow/data
     env_file: .env
     ulimits:
       nofile:
@@ -95,6 +97,8 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - ./service_conf.yaml.template:/ragflow/conf/service_conf.yaml.template
       - ./entrypoint.sh:/ragflow/entrypoint.sh
+      - ../data_saved:/ragflow/data_saved
+      - ../data:/ragflow/data
     env_file: .env
     ulimits:
       nofile:

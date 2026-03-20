@@ -26,14 +26,26 @@ Provides functionality for evaluating RAG system performance including:
 """
 
 import asyncio
+import io
+import json
 import logging
 import queue
 import threading
+import traceback
+import zipfile
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from timeit import default_timer as timer
 
-from api.db.db_models import EvaluationDataset, EvaluationCase, EvaluationRun, EvaluationResult
+from api.db.db_models import (
+    EvaluationDataset,
+    EvaluationCase,
+    EvaluationRun,
+    EvaluationResult,
+    EvaluationTemplate,
+    EvaluationTypeScript,
+)
 from api.db.services.common_service import CommonService
 from api.db.services.dialog_service import DialogService
 from common.misc_utils import get_uuid
@@ -45,6 +57,438 @@ class EvaluationService(CommonService):
     """Service for managing RAG evaluations"""
 
     model = EvaluationDataset
+    SINGLE_SHOT_CHAT_EVAL_TYPE = "Single-Shot Chat"
+    SINGLE_SHOT_CHAT_SCRIPT_PATH = "ragflow/evals/single_shot_chat.py"
+    CASE_STATUS_OK = "OK"
+    CASE_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
+    CASE_STATUS_FAILED = "FAILED"
+    RUN_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
+    ARTIFACTS_DIR = Path("/tmp/ragflow_eval_artifacts")
+    REPO_ROOT = Path(__file__).resolve().parents[3]
+
+    @classmethod
+    def _ensure_eval_type_script_mapping(cls, tenant_id: str, user_id: str) -> None:
+        mapping = EvaluationTypeScript.get_or_none(
+            (EvaluationTypeScript.tenant_id == tenant_id)
+            & (EvaluationTypeScript.eval_type == cls.SINGLE_SHOT_CHAT_EVAL_TYPE)
+            & (EvaluationTypeScript.status == StatusEnum.VALID.value)
+        )
+        if mapping:
+            return
+
+        timestamp = current_timestamp()
+        EvaluationTypeScript.create(
+            id=get_uuid(),
+            tenant_id=tenant_id,
+            eval_type=cls.SINGLE_SHOT_CHAT_EVAL_TYPE,
+            script_path=cls.SINGLE_SHOT_CHAT_SCRIPT_PATH,
+            created_by=user_id,
+            create_time=timestamp,
+            update_time=timestamp,
+            status=StatusEnum.VALID.value,
+        )
+
+    @classmethod
+    def list_eval_type_scripts(cls, tenant_id: str, user_id: str) -> List[Dict[str, Any]]:
+        try:
+            cls._ensure_eval_type_script_mapping(tenant_id, user_id)
+            rows = (
+                EvaluationTypeScript.select()
+                .where(
+                    (EvaluationTypeScript.tenant_id == tenant_id)
+                    & (EvaluationTypeScript.status == StatusEnum.VALID.value)
+                )
+                .order_by(EvaluationTypeScript.create_time.asc())
+            )
+            return [row.to_dict() for row in rows]
+        except Exception as e:
+            logging.error(f"Error listing evaluation type scripts: {e}")
+            return []
+
+    @classmethod
+    def create_eval_template(
+        cls,
+        *,
+        tenant_id: str,
+        user_id: str,
+        eval_type: str,
+        dataset_id: str,
+        dataset_path: str,
+    ) -> Tuple[bool, str]:
+        try:
+            cls._ensure_eval_type_script_mapping(tenant_id, user_id)
+            mapping = EvaluationTypeScript.get_or_none(
+                (EvaluationTypeScript.tenant_id == tenant_id)
+                & (EvaluationTypeScript.eval_type == eval_type)
+                & (EvaluationTypeScript.status == StatusEnum.VALID.value)
+            )
+            if not mapping:
+                return False, f"Unsupported eval type: {eval_type}"
+
+            path_obj = Path(dataset_path).expanduser()
+            if not path_obj.exists() or not path_obj.is_file():
+                return False, f"Dataset file does not exist: {dataset_path}"
+
+            raw_content = path_obj.read_text(encoding="utf-8")
+            parsed = json.loads(raw_content)
+            if not isinstance(parsed, list):
+                return False, "Dataset file must be a JSON array"
+
+            timestamp = current_timestamp()
+            template_id = get_uuid()
+            EvaluationTemplate.create(
+                id=template_id,
+                tenant_id=tenant_id,
+                eval_type=eval_type,
+                dataset_id=dataset_id,
+                dataset_path=dataset_path,
+                dataset_content=raw_content,
+                created_by=user_id,
+                create_time=timestamp,
+                update_time=timestamp,
+                status=StatusEnum.VALID.value,
+            )
+            return True, template_id
+        except Exception as e:
+            logging.error(f"Error creating evaluation template: {e}")
+            return False, str(e)
+
+    @classmethod
+    def list_eval_templates(cls, tenant_id: str, user_id: str) -> List[Dict[str, Any]]:
+        try:
+            cls._ensure_eval_type_script_mapping(tenant_id, user_id)
+            script_map = {
+                item["eval_type"]: item["script_path"]
+                for item in cls.list_eval_type_scripts(tenant_id, user_id)
+            }
+            rows = (
+                EvaluationTemplate.select()
+                .where(
+                    (EvaluationTemplate.tenant_id == tenant_id)
+                    & (EvaluationTemplate.status == StatusEnum.VALID.value)
+                )
+                .order_by(EvaluationTemplate.create_time.asc())
+            )
+            templates = [row.to_dict() for row in rows]
+            for template in templates:
+                template["script_path"] = script_map.get(template.get("eval_type"), "")
+            return templates
+        except Exception as e:
+            logging.error(f"Error listing evaluation templates: {e}")
+            return []
+
+    @classmethod
+    def delete_eval_template(cls, template_id: str, tenant_id: str) -> bool:
+        try:
+            return (
+                EvaluationTemplate.update(
+                    status=StatusEnum.INVALID.value,
+                    update_time=current_timestamp(),
+                )
+                .where(
+                    (EvaluationTemplate.id == template_id)
+                    & (EvaluationTemplate.tenant_id == tenant_id)
+                )
+                .execute()
+                > 0
+            )
+        except Exception as e:
+            logging.error(f"Error deleting evaluation template {template_id}: {e}")
+            return False
+
+    @classmethod
+    def _safe_int(cls, value: Any) -> Optional[int]:
+        if isinstance(value, bool) or value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return int(value)
+        if isinstance(value, str):
+            raw = value.strip()
+            if not raw:
+                return None
+            try:
+                return int(float(raw))
+            except Exception:
+                return None
+        return None
+
+    @classmethod
+    def _extract_page_numbers_from_chunk(cls, chunk: Dict[str, Any]) -> List[int]:
+        pages: List[int] = []
+        keys = [
+            "page_number",
+            "page_numbers",
+            "page_num",
+            "page_num_int",
+            "page",
+            "page_id",
+            "positions",
+        ]
+        for key in keys:
+            value = chunk.get(key)
+            if value is None:
+                continue
+            candidates: List[Any]
+            if isinstance(value, list):
+                candidates = value
+            else:
+                candidates = [value]
+            for candidate in candidates:
+                if isinstance(candidate, dict):
+                    for dict_key in ("page_number", "page_num", "page", "page_num_int"):
+                        page_no = cls._safe_int(candidate.get(dict_key))
+                        if page_no and page_no > 0:
+                            pages.append(page_no)
+                elif isinstance(candidate, (list, tuple)) and len(candidate) >= 1:
+                    page_no = cls._safe_int(candidate[0])
+                    if page_no and page_no > 0:
+                        pages.append(page_no)
+                else:
+                    page_no = cls._safe_int(candidate)
+                    if page_no and page_no > 0:
+                        pages.append(page_no)
+        return sorted(set(pages))
+
+    @classmethod
+    def _resolve_doc_id(cls, chunk: Dict[str, Any]) -> Optional[str]:
+        raw = (
+            chunk.get("docnm_kwd")
+            or chunk.get("doc_name")
+            or chunk.get("document_name")
+            or chunk.get("doc_id")
+            or chunk.get("document_id")
+        )
+        if not isinstance(raw, str) or not raw.strip():
+            return None
+        raw = raw.strip()
+        if raw.lower().endswith(".pdf"):
+            raw = raw[:-4]
+        return raw
+
+    @classmethod
+    def _normalize_retrieved_chunk_pages(cls, retrieved_chunks: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        pages_by_doc: Dict[str, set] = {}
+        for chunk in retrieved_chunks or []:
+            if not isinstance(chunk, dict):
+                continue
+            doc_id = cls._resolve_doc_id(chunk)
+            if not doc_id:
+                continue
+            page_numbers = cls._extract_page_numbers_from_chunk(chunk)
+            if not page_numbers:
+                continue
+            if doc_id not in pages_by_doc:
+                pages_by_doc[doc_id] = set()
+            pages_by_doc[doc_id].update(page_numbers)
+
+        normalized = []
+        for doc_id, pages in sorted(pages_by_doc.items(), key=lambda item: item[0]):
+            normalized.append(
+                {
+                    "doc_id": doc_id,
+                    "page_numbers": sorted(pages),
+                }
+            )
+        return normalized
+
+    @classmethod
+    def _build_telemetry(
+        cls,
+        raw_answer: Dict[str, Any],
+        retrieved_chunks: List[Dict[str, Any]],
+        execution_time_ms: int,
+        model_name_hint: Optional[str] = None,
+        question: Optional[str] = None,
+        generated_answer: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        try:
+            from rag.nlp import num_tokens_from_string
+        except Exception:
+            num_tokens_from_string = lambda s: max(1, len(s) // 4)
+
+        raw_answer = raw_answer or {}
+        provided_telemetry = raw_answer.get("telemetry") if isinstance(raw_answer, dict) else {}
+        provided_timing = provided_telemetry.get("timing", {}) if isinstance(provided_telemetry, dict) else {}
+        provided_retrieval = provided_telemetry.get("retrieval", {}) if isinstance(provided_telemetry, dict) else {}
+        provided_usage = provided_telemetry.get("usage", {}) if isinstance(provided_telemetry, dict) else {}
+        usage_obj = raw_answer.get("usage") or raw_answer.get("token_usage") or {}
+
+        ttft_ms = (
+            cls._safe_int(provided_timing.get("ttft_ms"))
+            or cls._safe_int(raw_answer.get("ttft_ms"))
+            or cls._safe_int(raw_answer.get("time_to_first_token_ms"))
+            or execution_time_ms
+        )
+        tpot_ms = (
+            cls._safe_int(provided_timing.get("tpot_ms"))
+            or cls._safe_int(raw_answer.get("tpot_ms"))
+            or cls._safe_int(raw_answer.get("time_per_output_token_ms"))
+        )
+        total_time_ms = (
+            cls._safe_int(provided_timing.get("total_time_ms"))
+            or cls._safe_int(raw_answer.get("total_time_ms"))
+            or cls._safe_int(raw_answer.get("elapsed_ms"))
+            or execution_time_ms
+        )
+
+        retrieved_chunk_pages = provided_retrieval.get("retrieved_chunk_pages")
+        if not isinstance(retrieved_chunk_pages, list):
+            retrieved_chunk_pages = cls._normalize_retrieved_chunk_pages(retrieved_chunks)
+
+        input_tokens = (
+            cls._safe_int(provided_usage.get("input_tokens") if isinstance(provided_usage, dict) else None)
+            or cls._safe_int(usage_obj.get("input_tokens"))
+            or cls._safe_int(usage_obj.get("prompt_tokens"))
+        )
+        output_tokens = (
+            cls._safe_int(provided_usage.get("output_tokens") if isinstance(provided_usage, dict) else None)
+            or cls._safe_int(usage_obj.get("output_tokens"))
+            or cls._safe_int(usage_obj.get("completion_tokens"))
+        )
+        provider_total = cls._safe_int(usage_obj.get("total_tokens"))
+
+        if output_tokens is None and generated_answer:
+            output_tokens = num_tokens_from_string(generated_answer)
+        if input_tokens is None and provider_total and output_tokens:
+            input_tokens = max(0, provider_total - output_tokens)
+        if input_tokens is None and question:
+            chunk_text = " ".join(
+                c.get("content_with_weight", "") or c.get("content_ltks", "") or ""
+                for c in (retrieved_chunks or [])
+                if isinstance(c, dict)
+            )
+            input_tokens = num_tokens_from_string(question + chunk_text)
+
+        if tpot_ms is None and output_tokens and output_tokens > 1 and total_time_ms and ttft_ms:
+            generation_ms = total_time_ms - ttft_ms
+            if generation_ms > 0:
+                tpot_ms = int(generation_ms / (output_tokens - 1))
+        tpot_ms = tpot_ms or 0
+
+        telemetry = {
+            "timing": {
+                "ttft_ms": ttft_ms,
+                "tpot_ms": tpot_ms,
+                "total_time_ms": total_time_ms,
+            },
+            "retrieval": {
+                "retrieved_chunk_pages": retrieved_chunk_pages,
+            },
+            "usage": {
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+            },
+            "model_name": raw_answer.get("model_name")
+            or raw_answer.get("model")
+            or raw_answer.get("model_id")
+            or (provided_telemetry.get("model_name") if isinstance(provided_telemetry, dict) else None)
+            or model_name_hint,
+        }
+        return telemetry
+
+    @classmethod
+    def _validate_telemetry(cls, telemetry: Dict[str, Any]) -> bool:
+        if not isinstance(telemetry, dict):
+            return False
+        timing = telemetry.get("timing")
+        retrieval = telemetry.get("retrieval")
+        usage = telemetry.get("usage")
+        model_name = telemetry.get("model_name")
+        if not isinstance(timing, dict) or not isinstance(retrieval, dict) or not isinstance(usage, dict):
+            return False
+        if not isinstance(model_name, str) or not model_name.strip():
+            return False
+
+        for key in ("ttft_ms", "tpot_ms", "total_time_ms"):
+            value = cls._safe_int(timing.get(key))
+            if value is None or value < 0:
+                return False
+
+        input_tokens = cls._safe_int(usage.get("input_tokens"))
+        output_tokens = cls._safe_int(usage.get("output_tokens"))
+        if input_tokens is None or input_tokens < 0 or output_tokens is None or output_tokens < 0:
+            return False
+
+        retrieved_chunk_pages = retrieval.get("retrieved_chunk_pages")
+        if not isinstance(retrieved_chunk_pages, list) or not retrieved_chunk_pages:
+            return False
+        for item in retrieved_chunk_pages:
+            if not isinstance(item, dict):
+                return False
+            doc_id = item.get("doc_id")
+            page_numbers = item.get("page_numbers")
+            if not isinstance(doc_id, str) or not doc_id.strip():
+                return False
+            if not isinstance(page_numbers, list) or not page_numbers:
+                return False
+            for page_no in page_numbers:
+                normalized_page_no = cls._safe_int(page_no)
+                if normalized_page_no is None or normalized_page_no <= 0:
+                    return False
+        return True
+
+    @classmethod
+    def _derive_case_status(cls, telemetry: Optional[Dict[str, Any]], failed: bool = False) -> str:
+        if failed:
+            return cls.CASE_STATUS_FAILED
+        if cls._validate_telemetry(telemetry or {}):
+            return cls.CASE_STATUS_OK
+        return cls.CASE_STATUS_MISSING_TELEMETRY
+
+    @classmethod
+    def _derive_run_status(cls, results: List[Dict[str, Any]]) -> str:
+        if not results:
+            return cls.CASE_STATUS_FAILED
+        failed_count = sum(1 for result in results if result.get("case_status") == cls.CASE_STATUS_FAILED)
+        missing_count = sum(
+            1 for result in results if result.get("case_status") == cls.CASE_STATUS_MISSING_TELEMETRY
+        )
+        completed_count = len(results) - failed_count
+        if failed_count > 0 and failed_count >= completed_count:
+            return cls.CASE_STATUS_FAILED
+        if missing_count > 0:
+            return cls.RUN_STATUS_MISSING_TELEMETRY
+        return "COMPLETED"
+
+    @classmethod
+    def _hydrate_result_with_status(cls, raw_result: Dict[str, Any]) -> Dict[str, Any]:
+        result = dict(raw_result)
+        telemetry = result.get("telemetry")
+        if not isinstance(telemetry, dict):
+            telemetry = {
+                "timing": {
+                    "ttft_ms": cls._safe_int((result.get("execution_time") or 0) * 1000),
+                    "tpot_ms": None,
+                    "total_time_ms": cls._safe_int((result.get("execution_time") or 0) * 1000),
+                },
+                "retrieval": {
+                    "retrieved_chunk_pages": cls._normalize_retrieved_chunk_pages(
+                        result.get("retrieved_chunks") or []
+                    ),
+                },
+                "usage": {
+                    "input_tokens": cls._safe_int((result.get("token_usage") or {}).get("input_tokens"))
+                    or cls._safe_int((result.get("token_usage") or {}).get("prompt_tokens")),
+                    "output_tokens": cls._safe_int((result.get("token_usage") or {}).get("output_tokens"))
+                    or cls._safe_int((result.get("token_usage") or {}).get("completion_tokens")),
+                },
+                "model_name": None,
+            }
+            result["telemetry"] = telemetry
+
+        case_status = result.get("case_status")
+        if not isinstance(case_status, str) or not case_status:
+            case_status = cls._derive_case_status(telemetry)
+            result["case_status"] = case_status
+        return result
+
+    @classmethod
+    def _artifact_paths(cls, run_id: str) -> Tuple[Path, Path]:
+        cls.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
+        return (
+            cls.ARTIFACTS_DIR / f"submission_{run_id}.json",
+            cls.ARTIFACTS_DIR / f"code_archive_{run_id}.zip",
+        )
 
     # ==================== Dataset Management ====================
 
@@ -293,6 +737,7 @@ class EvaluationService(CommonService):
                 "name": name,
                 "config_snapshot": dialog.to_dict(),
                 "metrics_summary": None,
+                "progress": 0.0,
                 "status": "RUNNING",
                 "created_by": user_id,
                 "create_time": current_timestamp(),
@@ -302,9 +747,11 @@ class EvaluationService(CommonService):
             if not EvaluationRun.create(**run):
                 return False, "Failed to create evaluation run"
 
-            # Execute evaluation asynchronously (in production, use task queue)
-            # For now, we'll execute synchronously
-            cls._execute_evaluation(run_id, dataset_id, dialog)
+            threading.Thread(
+                target=cls._execute_evaluation,
+                args=(run_id, dataset_id, dialog),
+                daemon=True,
+            ).start()
 
             return True, run_id
         except Exception as e:
@@ -318,40 +765,57 @@ class EvaluationService(CommonService):
 
         This method runs the RAG pipeline for each test case and computes metrics.
         """
+        log_buf = io.StringIO()
+        log_handler = logging.StreamHandler(log_buf)
+        log_handler.setLevel(logging.DEBUG)
+        log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
         try:
-            # Get all test cases
             test_cases = cls.get_test_cases(dataset_id)
 
             if not test_cases:
+                log_buf.write("No test cases found for dataset\n")
                 EvaluationRun.update(
                     status="FAILED",
+                    run_logs=log_buf.getvalue(),
                     complete_time=current_timestamp()
                 ).where(EvaluationRun.id == run_id).execute()
                 return
 
-            # Execute each test case
+            total = len(test_cases)
             results = []
-            for case in test_cases:
+            for idx, case in enumerate(test_cases):
                 result = cls._evaluate_single_case(run_id, case, dialog)
                 if result:
                     results.append(result)
+                done = idx + 1
+                EvaluationRun.update(
+                    progress=done / total,
+                    progress_msg=f"{done}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
 
-            # Compute summary metrics
             metrics_summary = cls._compute_summary_metrics(results)
+            run_status = cls._derive_run_status(results)
 
-            # Update run status
             EvaluationRun.update(
-                status="COMPLETED",
+                status=run_status,
+                progress=1.0,
                 metrics_summary=metrics_summary,
+                run_logs=log_buf.getvalue(),
                 complete_time=current_timestamp()
             ).where(EvaluationRun.id == run_id).execute()
 
         except Exception as e:
             logging.error(f"Error executing evaluation {run_id}: {e}")
+            log_buf.write(f"\n--- EXCEPTION ---\n{traceback.format_exc()}\n")
             EvaluationRun.update(
                 status="FAILED",
+                run_logs=log_buf.getvalue(),
                 complete_time=current_timestamp()
             ).where(EvaluationRun.id == run_id).execute()
+        finally:
+            root_logger.removeHandler(log_handler)
 
     @classmethod
     def _evaluate_single_case(cls, run_id: str, case: Dict[str, Any],
@@ -375,6 +839,7 @@ class EvaluationService(CommonService):
             start_time = timer()
             answer = ""
             retrieved_chunks = []
+            raw_answer = {}
 
 
             def _sync_from_async_gen(async_gen):
@@ -414,11 +879,26 @@ class EvaluationService(CommonService):
 
             for ans in chat(dialog, messages, stream=False):
                 if isinstance(ans, dict):
+                    raw_answer = ans
                     answer = ans.get("answer", "")
                     retrieved_chunks = ans.get("reference", {}).get("chunks", [])
                     break
 
             execution_time = timer() - start_time
+            execution_time_ms = int(execution_time * 1000)
+            if isinstance(dialog, dict):
+                model_name_hint = dialog.get("llm_id") or dialog.get("model") or dialog.get("model_name")
+            else:
+                model_name_hint = getattr(dialog, "llm_id", None) or getattr(dialog, "model", None)
+            telemetry = cls._build_telemetry(
+                raw_answer,
+                retrieved_chunks,
+                execution_time_ms,
+                model_name_hint=model_name_hint,
+                question=case["question"],
+                generated_answer=answer,
+            )
+            case_status = cls._derive_case_status(telemetry=telemetry)
 
             # Compute metrics
             metrics = cls._compute_metrics(
@@ -440,7 +920,9 @@ class EvaluationService(CommonService):
                 "retrieved_chunks": retrieved_chunks,
                 "metrics": metrics,
                 "execution_time": execution_time,
-                "token_usage": None,  # TODO: Track token usage
+                "token_usage": raw_answer.get("usage") or raw_answer.get("token_usage"),
+                "telemetry": telemetry,
+                "case_status": case_status,
                 "create_time": current_timestamp()
             }
 
@@ -449,7 +931,21 @@ class EvaluationService(CommonService):
             return result
         except Exception as e:
             logging.error(f"Error evaluating case {case.get('id')}: {e}")
-            return None
+            failed_result = {
+                "id": get_uuid(),
+                "run_id": run_id,
+                "case_id": case["id"],
+                "generated_answer": "",
+                "retrieved_chunks": [],
+                "metrics": {},
+                "execution_time": 0.0,
+                "token_usage": None,
+                "telemetry": None,
+                "case_status": cls.CASE_STATUS_FAILED,
+                "create_time": current_timestamp(),
+            }
+            EvaluationResult.create(**failed_result)
+            return failed_result
 
     @classmethod
     def _compute_metrics(cls, question: str, generated_answer: str,
@@ -544,21 +1040,44 @@ class EvaluationService(CommonService):
         if not results:
             return {}
 
+        hydrated_results = [cls._hydrate_result_with_status(result) for result in results]
+
         # Aggregate metrics
         metric_sums = {}
         metric_counts = {}
 
-        for result in results:
+        for result in hydrated_results:
+            if result.get("case_status") == cls.CASE_STATUS_FAILED:
+                continue
             metrics = result.get("metrics", {})
             for key, value in metrics.items():
                 if isinstance(value, (int, float)):
                     metric_sums[key] = metric_sums.get(key, 0) + value
                     metric_counts[key] = metric_counts.get(key, 0) + 1
 
+        failed_count = sum(1 for result in hydrated_results if result.get("case_status") == cls.CASE_STATUS_FAILED)
+        missing_telemetry_count = sum(
+            1
+            for result in hydrated_results
+            if result.get("case_status") == cls.CASE_STATUS_MISSING_TELEMETRY
+        )
+        ok_count = sum(1 for result in hydrated_results if result.get("case_status") == cls.CASE_STATUS_OK)
+        completed_count = len(hydrated_results) - failed_count
+        avg_execution_time = (
+            sum(r.get("execution_time", 0) for r in hydrated_results) / len(hydrated_results)
+            if hydrated_results
+            else 0.0
+        )
+
         # Compute averages
         summary = {
-            "total_cases": len(results),
-            "avg_execution_time": sum(r.get("execution_time", 0) for r in results) / len(results)
+            "total_cases": len(hydrated_results),
+            "completed_cases": completed_count,
+            "ok_cases": ok_count,
+            "missing_telemetry_cases": missing_telemetry_count,
+            "failed_cases": failed_count,
+            "avg_execution_time": avg_execution_time,
+            "telemetry_complete_rate": (ok_count / completed_count) if completed_count else 0.0,
         }
 
         for key in metric_sums:
@@ -591,7 +1110,20 @@ class EvaluationService(CommonService):
             query = query.order_by(EvaluationRun.create_time.desc())
             total = query.count()
             runs = query.paginate(page, page_size)
-            return {"runs": [r.to_dict() for r in runs], "total": total}
+            run_dicts = [r.to_dict() for r in runs]
+            for run in run_dicts:
+                if run.get("status") not in {"COMPLETED", cls.RUN_STATUS_MISSING_TELEMETRY}:
+                    continue
+                result_rows = (
+                    EvaluationResult.select()
+                    .where(EvaluationResult.run_id == run["id"])
+                    .order_by(EvaluationResult.create_time)
+                )
+                hydrated = [cls._hydrate_result_with_status(item.to_dict()) for item in result_rows]
+                derived_status = cls._derive_run_status(hydrated)
+                if derived_status == cls.RUN_STATUS_MISSING_TELEMETRY:
+                    run["status"] = cls.RUN_STATUS_MISSING_TELEMETRY
+            return {"runs": run_dicts, "total": total}
         except Exception as e:
             logging.error(f"Error listing evaluation runs: {e}")
             return {"runs": [], "total": 0}
@@ -607,14 +1139,101 @@ class EvaluationService(CommonService):
             results = EvaluationResult.select().where(
                 EvaluationResult.run_id == run_id
             ).order_by(EvaluationResult.create_time)
+            normalized_results = [cls._hydrate_result_with_status(r.to_dict()) for r in results]
+            run_dict = run.to_dict()
+            derived_status = cls._derive_run_status(normalized_results)
+            if run_dict.get("status") in {"COMPLETED", cls.RUN_STATUS_MISSING_TELEMETRY}:
+                run_dict["status"] = derived_status
+            submission_path, code_archive_path = cls._artifact_paths(run_id)
+            run_dict["artifacts"] = {
+                "submission": {
+                    "filename": submission_path.name,
+                    "path": str(submission_path),
+                    "exists": submission_path.exists(),
+                },
+                "code_archive": {
+                    "filename": code_archive_path.name,
+                    "path": str(code_archive_path),
+                    "exists": code_archive_path.exists(),
+                },
+            }
 
             return {
-                "run": run.to_dict(),
-                "results": [r.to_dict() for r in results]
+                "run": run_dict,
+                "results": normalized_results
             }
         except Exception as e:
             logging.error(f"Error getting run results {run_id}: {e}")
             return {}
+
+    @classmethod
+    def build_submission_artifact(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
+        run_result = cls.get_run_results(run_id)
+        if not run_result:
+            return False, {"message": f"Evaluation run not found: {run_id}"}
+
+        run = run_result["run"]
+        results = run_result["results"]
+        case_map = {
+            case["id"]: case
+            for case in cls.get_test_cases(run.get("dataset_id"))
+        }
+
+        answers = []
+        for result in results:
+            case = case_map.get(result.get("case_id"), {})
+            metadata = case.get("metadata") or {}
+            question_id = metadata.get("source_id") or result.get("case_id")
+            answers.append(
+                {
+                    "question_id": question_id,
+                    "answer": result.get("generated_answer"),
+                    "telemetry": result.get("telemetry"),
+                }
+            )
+
+        payload = {
+            "architecture_summary": f"Generated from RAGFlow evaluation run {run_id}",
+            "answers": answers,
+        }
+        submission_path, _ = cls._artifact_paths(run_id)
+        submission_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        return True, {"path": str(submission_path), "filename": submission_path.name}
+
+    @classmethod
+    def build_code_archive_artifact(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
+        _, code_archive_path = cls._artifact_paths(run_id)
+        with zipfile.ZipFile(code_archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+            for file_path in sorted(cls.REPO_ROOT.rglob("*")):
+                if not file_path.is_file():
+                    continue
+                if ".git" in file_path.parts or "__pycache__" in file_path.parts:
+                    continue
+                zip_file.write(file_path, arcname=file_path.relative_to(cls.REPO_ROOT))
+        return True, {"path": str(code_archive_path), "filename": code_archive_path.name}
+
+    @classmethod
+    def get_run_artifact(cls, run_id: str, artifact_type: str) -> Tuple[bool, Dict[str, Any]]:
+        run_result = cls.get_run_results(run_id)
+        if not run_result:
+            return False, {"message": "Evaluation run not found"}
+
+        if artifact_type == "submission":
+            success, payload = cls.build_submission_artifact(run_id)
+            if not success:
+                return False, payload
+            return True, {**payload, "mimetype": "application/json"}
+
+        if artifact_type == "code_archive":
+            success, payload = cls.build_code_archive_artifact(run_id)
+            if not success:
+                return False, payload
+            return True, {**payload, "mimetype": "application/zip"}
+
+        return False, {"message": f"Unsupported artifact type: {artifact_type}"}
 
     @classmethod
     def get_recommendations(cls, run_id: str) -> List[Dict[str, Any]]:

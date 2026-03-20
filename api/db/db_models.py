@@ -1279,6 +1279,9 @@ class EvaluationRun(DataBaseModel):
     config_snapshot = JSONField(null=False, help_text="dialog config at time of evaluation")
     metrics_summary = JSONField(null=True, help_text="aggregated metrics")
     status = CharField(max_length=32, null=False, default="PENDING", help_text="PENDING/RUNNING/COMPLETED/FAILED")
+    progress = FloatField(null=True, default=0.0, help_text="execution progress 0.0-1.0")
+    progress_msg = CharField(max_length=32, null=True, help_text="human-readable progress e.g. 2/10")
+    run_logs = TextField(null=True, help_text="execution logs captured during the run")
     created_by = CharField(max_length=32, null=False, index=True, help_text="user who started the run")
     create_time = BigIntegerField(null=False, index=True, help_text="creation timestamp")
     complete_time = BigIntegerField(null=True, help_text="completion timestamp")
@@ -1297,10 +1300,47 @@ class EvaluationResult(DataBaseModel):
     metrics = JSONField(null=False, help_text="all computed metrics")
     execution_time = FloatField(null=False, help_text="response time in seconds")
     token_usage = JSONField(null=True, help_text="prompt/completion tokens")
+    telemetry = JSONField(null=True, help_text="normalized telemetry payload")
+    case_status = CharField(max_length=32, null=False, default="OK", help_text="OK/MISSING_TELEMETRY/FAILED")
     create_time = BigIntegerField(null=False, help_text="creation timestamp")
 
     class Meta:
         db_table = "evaluation_results"
+
+
+class EvaluationTypeScript(DataBaseModel):
+    """Mapping between eval type and executable script"""
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True, help_text="tenant ID")
+    eval_type = CharField(max_length=255, null=False, index=True, help_text="evaluation type")
+    script_path = CharField(max_length=512, null=False, help_text="executable script path")
+    created_by = CharField(max_length=32, null=False, index=True, help_text="creator user ID")
+    create_time = BigIntegerField(null=False, index=True, help_text="creation timestamp")
+    update_time = BigIntegerField(null=False, help_text="last update timestamp")
+    status = IntegerField(null=False, default=1, help_text="1=valid, 0=invalid")
+
+    class Meta:
+        db_table = "evaluation_type_scripts"
+        indexes = (
+            (("tenant_id", "eval_type"), True),
+        )
+
+
+class EvaluationTemplate(DataBaseModel):
+    """Persisted evaluation template configuration"""
+    id = CharField(max_length=32, primary_key=True)
+    tenant_id = CharField(max_length=32, null=False, index=True, help_text="tenant ID")
+    eval_type = CharField(max_length=255, null=False, index=True, help_text="evaluation type")
+    dataset_id = CharField(max_length=32, null=False, index=True, help_text="knowledge base ID")
+    dataset_path = CharField(max_length=1024, null=False, help_text="local json dataset path")
+    dataset_content = LongTextField(null=False, help_text="dataset json content")
+    created_by = CharField(max_length=32, null=False, index=True, help_text="creator user ID")
+    create_time = BigIntegerField(null=False, index=True, help_text="creation timestamp")
+    update_time = BigIntegerField(null=False, help_text="last update timestamp")
+    status = IntegerField(null=False, default=1, help_text="1=valid, 0=invalid")
+
+    class Meta:
+        db_table = "evaluation_templates"
 
 
 class Memory(DataBaseModel):
@@ -1634,6 +1674,11 @@ def migrate_db():
     alter_db_add_column(migrator, "memory", "tenant_llm_id", IntegerField(null=True, help_text="id in tenant_llm", index=True))
     alter_db_add_column(migrator, "user_canvas_version", "release", BooleanField(null=False, help_text="is released", default=False, index=True))
     alter_db_add_column(migrator, "api_4_conversation", "version_title", CharField(max_length=255, null=True, help_text="canvas version title when session created", index=False))
+    alter_db_add_column(migrator, "evaluation_results", "telemetry", JSONField(null=True, help_text="normalized telemetry payload"))
+    alter_db_add_column(migrator, "evaluation_results", "case_status", CharField(max_length=32, null=False, default="OK", help_text="OK/MISSING_TELEMETRY/FAILED"))
+    alter_db_add_column(migrator, "evaluation_runs", "progress", FloatField(null=True, default=0.0, help_text="execution progress 0.0-1.0"))
+    alter_db_add_column(migrator, "evaluation_runs", "progress_msg", CharField(max_length=32, null=True, help_text="human-readable progress e.g. 2/10"))
+    alter_db_add_column(migrator, "evaluation_runs", "run_logs", TextField(null=True, help_text="execution logs captured during the run"))
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

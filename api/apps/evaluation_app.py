@@ -25,7 +25,8 @@ Provides REST API for RAG evaluation functionality including:
 - Configuration recommendations
 """
 
-from quart import request
+from pathlib import Path
+from quart import request, send_file
 from api.apps import login_required, current_user
 from api.db.services.evaluation_service import EvaluationService
 from api.utils.api_utils import (
@@ -35,14 +36,130 @@ from api.utils.api_utils import (
     server_error_response,
     validate_request
 )
-from common.constants import RetCode
+from common.constants import RetCode, StatusEnum
+
+
+# ==================== Template Management ====================
+
+@manager.route('/template/types', methods=['GET'])  # noqa: F821
+@login_required
+async def list_eval_template_types():
+    """List available eval type to script mappings"""
+    try:
+        mappings = EvaluationService.list_eval_type_scripts(
+            tenant_id=current_user.id,
+            user_id=current_user.id,
+        )
+        return get_json_result(data={"types": mappings})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/template/list', methods=['GET'])  # noqa: F821
+@login_required
+async def list_eval_templates():
+    """List evaluation templates for current tenant"""
+    try:
+        templates = EvaluationService.list_eval_templates(
+            tenant_id=current_user.id,
+            user_id=current_user.id,
+        )
+        return get_json_result(data={"templates": templates, "total": len(templates)})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/template/create', methods=['POST'])  # noqa: F821
+@login_required
+@validate_request("eval_type", "dataset_id", "dataset_path")
+async def create_eval_template():
+    """Create an evaluation template"""
+    try:
+        req = await get_request_json()
+        eval_type = req.get("eval_type", "").strip()
+        dataset_id = req.get("dataset_id", "").strip()
+        dataset_path = req.get("dataset_path", "").strip()
+
+        if not eval_type:
+            return get_data_error_result(message="eval_type cannot be empty")
+        if not dataset_id:
+            return get_data_error_result(message="dataset_id cannot be empty")
+        if not dataset_path:
+            return get_data_error_result(message="dataset_path cannot be empty")
+
+        success, result = EvaluationService.create_eval_template(
+            tenant_id=current_user.id,
+            user_id=current_user.id,
+            eval_type=eval_type,
+            dataset_id=dataset_id,
+            dataset_path=dataset_path,
+        )
+        if not success:
+            return get_data_error_result(message=result)
+        return get_json_result(data={"template_id": result})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/template/<template_id>', methods=['DELETE'])  # noqa: F821
+@login_required
+async def delete_eval_template(template_id):
+    """Delete an evaluation template (soft delete)"""
+    try:
+        success = EvaluationService.delete_eval_template(
+            template_id=template_id,
+            tenant_id=current_user.id,
+        )
+        if not success:
+            return get_data_error_result(message="Failed to delete evaluation template")
+        return get_json_result(data={"template_id": template_id})
+    except Exception as e:
+        return server_error_response(e)
+
+
+# ==================== Knowledge Base Lookup ====================
+
+@manager.route('/kb/available', methods=['GET'])  # noqa: F821
+@login_required
+async def list_available_kbs():
+    """List all active knowledge bases across tenants for evaluation."""
+    try:
+        from api.db.db_models import Knowledgebase
+        kbs = (
+            Knowledgebase.select()
+            .where(Knowledgebase.status == StatusEnum.VALID.value)
+            .order_by(Knowledgebase.create_time.desc())
+        )
+        return get_json_result(data={"kbs": [{"id": kb.id, "name": kb.name} for kb in kbs]})
+    except Exception as e:
+        return server_error_response(e)
+
+
+# ==================== Dialog Lookup ====================
+
+@manager.route('/dialog/available', methods=['GET'])  # noqa: F821
+@login_required
+async def list_available_dialogs():
+    """List all active chat apps (dialogs) for evaluation."""
+    try:
+        from api.db.db_models import Dialog
+        dialogs = (
+            Dialog.select()
+            .where(Dialog.status == StatusEnum.VALID.value)
+            .order_by(Dialog.create_time.desc())
+        )
+        return get_json_result(data={
+            "dialogs": [{"id": d.id, "name": d.name} for d in dialogs]
+        })
+    except Exception as e:
+        return server_error_response(e)
 
 
 # ==================== Dataset Management ====================
 
 @manager.route('/dataset/create', methods=['POST'])  # noqa: F821
 @login_required
-@validate_request("name", "kb_ids")
+@validate_request("name")
 async def create_dataset():
     """
     Create a new evaluation dataset.
@@ -51,7 +168,7 @@ async def create_dataset():
     {
         "name": "Dataset name",
         "description": "Optional description",
-        "kb_ids": ["kb_id1", "kb_id2"]
+        "kb_ids": ["kb_id1", "kb_id2"]  (optional)
     }
     """
     try:
@@ -63,8 +180,8 @@ async def create_dataset():
         if not name:
             return get_data_error_result(message="Dataset name cannot be empty")
         
-        if not kb_ids or not isinstance(kb_ids, list):
-            return get_data_error_result(message="kb_ids must be a non-empty list")
+        if not isinstance(kb_ids, list):
+            return get_data_error_result(message="kb_ids must be a list")
         
         success, result = EvaluationService.create_dataset(
             name=name,
@@ -338,6 +455,23 @@ async def get_evaluation_run(run_id):
         return server_error_response(e)
 
 
+@manager.route('/run/<run_id>/logs', methods=['GET'])  # noqa: F821
+@login_required
+async def get_run_logs(run_id):
+    """Get execution logs for an evaluation run"""
+    try:
+        from api.db.db_models import EvaluationRun as EvalRunModel
+        run = EvalRunModel.get_or_none(EvalRunModel.id == run_id)
+        if not run:
+            return get_data_error_result(
+                message="Evaluation run not found",
+                code=RetCode.DATA_ERROR
+            )
+        return get_json_result(data={"run_id": run_id, "logs": run.run_logs or ""})
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route('/run/<run_id>/results', methods=['GET'])  # noqa: F821
 @login_required
 async def get_run_results(run_id):
@@ -452,8 +586,43 @@ async def export_results(run_id):
                 code=RetCode.DATA_ERROR
             )
         
-        # TODO: Implement CSV export
         return get_json_result(data=result)
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/run/<run_id>/artifact/<artifact_type>', methods=['GET'])  # noqa: F821
+@login_required
+async def download_run_artifact(run_id, artifact_type):
+    """Generate and download run artifacts: submission/code_archive"""
+    try:
+        success, payload = EvaluationService.get_run_artifact(run_id, artifact_type)
+        if not success:
+            return get_data_error_result(
+                message=payload.get("message", "Failed to generate run artifact"),
+                code=RetCode.DATA_ERROR,
+            )
+
+        file_path = payload.get("path")
+        if not file_path:
+            return get_data_error_result(
+                message="Artifact path is missing",
+                code=RetCode.DATA_ERROR,
+            )
+
+        path_obj = Path(file_path)
+        if not path_obj.exists() or not path_obj.is_file():
+            return get_data_error_result(
+                message="Artifact file not found",
+                code=RetCode.DATA_ERROR,
+            )
+
+        return await send_file(
+            str(path_obj),
+            as_attachment=True,
+            attachment_filename=payload.get("filename", path_obj.name),
+            mimetype=payload.get("mimetype", "application/octet-stream"),
+        )
     except Exception as e:
         return server_error_response(e)
 

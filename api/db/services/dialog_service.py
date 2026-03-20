@@ -246,7 +246,11 @@ async def async_chat_solo(dialog, messages, stream=True):
             answer = await chat_mdl.async_chat(prompt_config.get("system", ""), msg, dialog.llm_setting, images=image_files)
         user_content = msg[-1].get("content", "[content not available]")
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
-        yield {"answer": answer, "reference": {}, "audio_binary": tts(tts_mdl, answer), "prompt": "", "created_at": time.time()}
+        yield {
+            "answer": answer, "reference": {}, "audio_binary": tts(tts_mdl, answer),
+            "prompt": "", "created_at": time.time(),
+            "model_name": getattr(chat_mdl, "model_name", None) or dialog.llm_id,
+        }
 
 
 def get_models(dialog):
@@ -775,6 +779,7 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
         logging.debug("User: {}|Assistant: {}".format(user_content, answer))
         res = decorate_answer(answer)
         res["audio_binary"] = tts(tts_mdl, answer)
+        res["model_name"] = getattr(chat_mdl, "model_name", None) or dialog.llm_id
         yield res
 
     return

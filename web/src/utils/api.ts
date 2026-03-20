@@ -259,14 +259,27 @@ export default {
     `${ExternalApi}${api_host}/messages/${data.memory_id}:${data.message_id}`,
 
   // evaluation
+  listAvailableKbsForEval: `${api_host}/evaluation/kb/available`,
+  listAvailableDialogsForEval: `${api_host}/evaluation/dialog/available`,
+  listEvaluationTemplateTypes: `${api_host}/evaluation/template/types`,
+  listEvaluationTemplates: `${api_host}/evaluation/template/list`,
+  createEvaluationTemplate: `${api_host}/evaluation/template/create`,
+  deleteEvaluationTemplate: (templateId: string) =>
+    `${api_host}/evaluation/template/${templateId}`,
   listEvaluationRuns: `${api_host}/evaluation/run/list`,
   getEvaluationRun: (runId: string) => `${api_host}/evaluation/run/${runId}`,
+  getEvaluationRunLogs: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/logs`,
   createEvaluationDataset: `${api_host}/evaluation/dataset/create`,
   importEvaluationDatasetCases: (datasetId: string) =>
     `${api_host}/evaluation/dataset/${datasetId}/case/import`,
   startEvaluationRun: `${api_host}/evaluation/run/start`,
   getEvaluationDatasetCases: (datasetId: string) =>
     `${api_host}/evaluation/dataset/${datasetId}/cases`,
+  downloadEvaluationSubmissionArtifact: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/artifact/submission`,
+  downloadEvaluationCodeArchiveArtifact: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/artifact/code_archive`,
 
   // data pipeline
   fetchDataflow: (id: string) => `${api_host}/dataflow/get/${id}`,
