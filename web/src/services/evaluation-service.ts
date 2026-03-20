@@ -65,6 +65,11 @@ const methods = {
       api.downloadEvaluationCodeArchiveArtifact(config.runId),
     method: 'get',
   },
+  rerunFailedEvaluationRun: {
+    url: (config: { runId: string }) =>
+      api.rerunFailedEvaluationRun(config.runId),
+    method: 'post',
+  },
 } as const;
 
 const evaluationService = registerNextServer<keyof typeof methods>(methods);

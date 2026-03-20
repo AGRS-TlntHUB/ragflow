@@ -1085,6 +1085,135 @@ class EvaluationService(CommonService):
 
         return summary
 
+    # ==================== Rerun Failed ====================
+
+    @classmethod
+    def rerun_failed(cls, source_run_id: str, user_id: str) -> Tuple[bool, str]:
+        try:
+            source_run = EvaluationRun.get_or_none(EvaluationRun.id == source_run_id)
+            if not source_run:
+                return False, "Source evaluation run not found"
+            if source_run.status in ("RUNNING", "PENDING"):
+                return False, "Source run is still in progress"
+
+            source_results = list(
+                EvaluationResult.select().where(EvaluationResult.run_id == source_run_id)
+            )
+            if not source_results:
+                return False, "Source run has no results"
+
+            hydrated = [cls._hydrate_result_with_status(r.to_dict()) for r in source_results]
+            rerun_case_ids = {
+                r["case_id"]
+                for r in hydrated
+                if r.get("case_status") in (cls.CASE_STATUS_FAILED, cls.CASE_STATUS_MISSING_TELEMETRY)
+            }
+            if not rerun_case_ids:
+                return False, "No failed or missing-telemetry cases to rerun"
+
+            success, dialog = DialogService.get_by_id(source_run.dialog_id)
+            if not success:
+                return False, "Dialog not found for source run"
+
+            run_id = get_uuid()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            name = (source_run.name or "") + f" (rerun {now})"
+
+            EvaluationRun.create(
+                id=run_id,
+                dataset_id=source_run.dataset_id,
+                dialog_id=source_run.dialog_id,
+                name=name,
+                config_snapshot=dialog.to_dict(),
+                metrics_summary=None,
+                progress=0.0,
+                status="RUNNING",
+                created_by=user_id,
+                create_time=current_timestamp(),
+                complete_time=None,
+            )
+
+            ok_results = [r for r in hydrated if r["case_id"] not in rerun_case_ids]
+            for r in ok_results:
+                EvaluationResult.create(
+                    id=get_uuid(),
+                    run_id=run_id,
+                    case_id=r["case_id"],
+                    generated_answer=r.get("generated_answer", ""),
+                    retrieved_chunks=r.get("retrieved_chunks", []),
+                    metrics=r.get("metrics", {}),
+                    execution_time=r.get("execution_time", 0.0),
+                    token_usage=r.get("token_usage"),
+                    telemetry=r.get("telemetry"),
+                    case_status=r.get("case_status", cls.CASE_STATUS_OK),
+                    create_time=current_timestamp(),
+                )
+
+            threading.Thread(
+                target=cls._execute_rerun,
+                args=(run_id, source_run.dataset_id, dialog, rerun_case_ids, len(ok_results)),
+                daemon=True,
+            ).start()
+
+            return True, run_id
+        except Exception as e:
+            logging.error(f"Error rerunning failed cases: {e}")
+            return False, str(e)
+
+    @classmethod
+    def _execute_rerun(
+        cls,
+        run_id: str,
+        dataset_id: str,
+        dialog: Any,
+        rerun_case_ids: set,
+        pre_copied_count: int,
+    ):
+        log_buf = io.StringIO()
+        log_handler = logging.StreamHandler(log_buf)
+        log_handler.setLevel(logging.DEBUG)
+        log_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+        root_logger = logging.getLogger()
+        root_logger.addHandler(log_handler)
+        try:
+            test_cases = [c for c in cls.get_test_cases(dataset_id) if c["id"] in rerun_case_ids]
+            total = pre_copied_count + len(test_cases)
+            results = []
+            for idx, case in enumerate(test_cases):
+                result = cls._evaluate_single_case(run_id, case, dialog)
+                if result:
+                    results.append(result)
+                done = pre_copied_count + idx + 1
+                EvaluationRun.update(
+                    progress=done / total,
+                    progress_msg=f"{done}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
+
+            all_result_rows = list(
+                EvaluationResult.select().where(EvaluationResult.run_id == run_id)
+            )
+            all_hydrated = [cls._hydrate_result_with_status(r.to_dict()) for r in all_result_rows]
+            metrics_summary = cls._compute_summary_metrics(all_hydrated)
+            run_status = cls._derive_run_status(all_hydrated)
+
+            EvaluationRun.update(
+                status=run_status,
+                progress=1.0,
+                metrics_summary=metrics_summary,
+                run_logs=log_buf.getvalue(),
+                complete_time=current_timestamp(),
+            ).where(EvaluationRun.id == run_id).execute()
+        except Exception as e:
+            logging.error(f"Error executing rerun {run_id}: {e}")
+            log_buf.write(f"\n--- EXCEPTION ---\n{traceback.format_exc()}\n")
+            EvaluationRun.update(
+                status="FAILED",
+                run_logs=log_buf.getvalue(),
+                complete_time=current_timestamp(),
+            ).where(EvaluationRun.id == run_id).execute()
+        finally:
+            root_logger.removeHandler(log_handler)
+
     # ==================== Results & Analysis ====================
 
     @classmethod

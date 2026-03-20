@@ -23,6 +23,7 @@ import { useQuery } from '@tanstack/react-query';
 import { message } from 'antd';
 import {
   LucideFileText,
+  LucideRefreshCw,
   LucideSend,
   LucideSettings,
   LucideTrash2,
@@ -830,6 +831,42 @@ export default function Evals() {
     }
   };
 
+  const [rerunLoading, setRerunLoading] = useState(false);
+
+  const hasFailedOrMissing = useMemo(() => {
+    if (!selectedRun || !canDownloadArtifacts) return false;
+    return results.some(
+      (r) =>
+        r.case_status === 'FAILED' || r.case_status === 'MISSING_TELEMETRY',
+    );
+  }, [selectedRun, canDownloadArtifacts, results]);
+
+  const handleRerunFailed = async () => {
+    if (!selectedRun?.id || !selectedTemplate) return;
+    setRerunLoading(true);
+    try {
+      const { data: response } =
+        await evaluationService.rerunFailedEvaluationRun(
+          {
+            runId: selectedRun.id,
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to rerun failed cases');
+      }
+      await refetchRuns();
+      message.success('Rerun started');
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : 'Failed to rerun failed cases',
+      );
+    } finally {
+      setRerunLoading(false);
+    }
+  };
+
   const stringifyValue = (value: unknown): string => {
     if (value === null || value === undefined) return '';
     if (typeof value === 'string') return value;
@@ -1043,6 +1080,19 @@ export default function Evals() {
                     >
                       <LucideFileText className="size-3.5" />
                       Show logs
+                    </button>
+                  )}
+                  {hasFailedOrMissing && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRerunFailed()}
+                      disabled={rerunLoading}
+                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <LucideRefreshCw
+                        className={`size-3.5 ${rerunLoading ? 'animate-spin' : ''}`}
+                      />
+                      {rerunLoading ? 'Rerunning...' : 'Rerun failed'}
                     </button>
                   )}
                 </div>

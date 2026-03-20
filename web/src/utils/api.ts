@@ -280,6 +280,8 @@ export default {
     `${api_host}/evaluation/run/${runId}/artifact/submission`,
   downloadEvaluationCodeArchiveArtifact: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/artifact/code_archive`,
+  rerunFailedEvaluationRun: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/rerun_failed`,
 
   // data pipeline
   fetchDataflow: (id: string) => `${api_host}/dataflow/get/${id}`,

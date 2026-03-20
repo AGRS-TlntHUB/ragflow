@@ -520,6 +520,22 @@ async def list_evaluation_runs():
         return server_error_response(e)
 
 
+@manager.route('/run/<run_id>/rerun_failed', methods=['POST'])  # noqa: F821
+@login_required
+async def rerun_failed(run_id):
+    """Create a new run that copies OK results and re-runs failed/missing-telemetry cases."""
+    try:
+        success, result = EvaluationService.rerun_failed(
+            source_run_id=run_id,
+            user_id=current_user.id,
+        )
+        if not success:
+            return get_data_error_result(message=result)
+        return get_json_result(data={"run_id": result})
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route('/run/<run_id>', methods=['DELETE'])  # noqa: F821
 @login_required
 async def delete_evaluation_run(run_id):
