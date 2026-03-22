@@ -421,17 +421,24 @@ async def start_evaluation():
         dataset_id = req.get("dataset_id")
         dialog_id = req.get("dialog_id")
         name = req.get("name")
-        
+        parallel = req.get("parallel", True)
+        raw_max_workers = req.get("max_workers")
+        max_workers = int(raw_max_workers) if raw_max_workers is not None else None
+        if max_workers is not None and max_workers < 1:
+            return get_data_error_result(message="max_workers must be >= 1")
+
         success, result = EvaluationService.start_evaluation(
             dataset_id=dataset_id,
             dialog_id=dialog_id,
             user_id=current_user.id,
-            name=name
+            name=name,
+            parallel=bool(parallel),
+            max_workers=max_workers,
         )
-        
+
         if not success:
             return get_data_error_result(message=result)
-        
+
         return get_json_result(data={"run_id": result})
     except Exception as e:
         return server_error_response(e)
@@ -613,6 +620,18 @@ async def run_llm_judge(run_id):
             only_errors=only_errors,
             only_failed=only_failed,
         )
+        if not success:
+            return get_data_error_result(message=result)
+        return get_json_result(data={"run_id": result})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/run/<run_id>/judge/cancel', methods=['POST'])  # noqa: F821
+@login_required
+async def cancel_llm_judge(run_id):
+    try:
+        success, result = EvaluationService.cancel_judge(run_id)
         if not success:
             return get_data_error_result(message=result)
         return get_json_result(data={"run_id": result})

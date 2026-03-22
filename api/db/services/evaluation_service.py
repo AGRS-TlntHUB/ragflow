@@ -341,6 +341,7 @@ class EvaluationService(CommonService):
         model_name_hint: Optional[str] = None,
         question: Optional[str] = None,
         generated_answer: Optional[str] = None,
+        is_parallel: bool = False,
     ) -> Dict[str, Any]:
         try:
             from rag.nlp import num_tokens_from_string
@@ -354,11 +355,10 @@ class EvaluationService(CommonService):
         provided_usage = provided_telemetry.get("usage", {}) if isinstance(provided_telemetry, dict) else {}
         usage_obj = raw_answer.get("usage") or raw_answer.get("token_usage") or {}
 
-        ttft_ms = (
+        upstream_ttft = (
             cls._safe_int(provided_timing.get("ttft_ms"))
             or cls._safe_int(raw_answer.get("ttft_ms"))
             or cls._safe_int(raw_answer.get("time_to_first_token_ms"))
-            or execution_time_ms
         )
         tpot_ms = (
             cls._safe_int(provided_timing.get("tpot_ms"))
@@ -371,6 +371,13 @@ class EvaluationService(CommonService):
             or cls._safe_int(raw_answer.get("elapsed_ms"))
             or execution_time_ms
         )
+
+        if upstream_ttft:
+            ttft_ms = upstream_ttft
+        elif is_parallel:
+            ttft_ms = None
+        else:
+            ttft_ms = execution_time_ms
 
         retrieved_chunk_pages = provided_retrieval.get("retrieved_chunk_pages")
         if not isinstance(retrieved_chunk_pages, list):
@@ -404,13 +411,15 @@ class EvaluationService(CommonService):
             generation_ms = total_time_ms - ttft_ms
             if generation_ms > 0:
                 tpot_ms = int(generation_ms / (output_tokens - 1))
-        tpot_ms = tpot_ms or 0
+        if not is_parallel:
+            tpot_ms = tpot_ms or 0
 
         telemetry = {
             "timing": {
                 "ttft_ms": ttft_ms,
                 "tpot_ms": tpot_ms,
                 "total_time_ms": total_time_ms,
+                "execution_time_ms": execution_time_ms,
             },
             "retrieval": {
                 "retrieved_chunk_pages": retrieved_chunk_pages,
@@ -424,6 +433,7 @@ class EvaluationService(CommonService):
             or raw_answer.get("model_id")
             or (provided_telemetry.get("model_name") if isinstance(provided_telemetry, dict) else None)
             or model_name_hint,
+            "is_parallel": is_parallel,
         }
         return telemetry
 
@@ -746,27 +756,20 @@ class EvaluationService(CommonService):
     # ==================== Evaluation Execution ====================
 
     @classmethod
-    def start_evaluation(cls, dataset_id: str, dialog_id: str,
-                        user_id: str, name: Optional[str] = None) -> Tuple[bool, str]:
-        """
-        Start an evaluation run.
-
-        Args:
-            dataset_id: Dataset ID
-            dialog_id: Dialog configuration to evaluate
-            user_id: User ID who starts the run
-            name: Optional run name
-
-        Returns:
-            (success, run_id or error_message)
-        """
+    def start_evaluation(
+        cls,
+        dataset_id: str,
+        dialog_id: str,
+        user_id: str,
+        name: Optional[str] = None,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
+    ) -> Tuple[bool, str]:
         try:
-            # Get dialog configuration
             success, dialog = DialogService.get_by_id(dialog_id)
             if not success:
                 return False, "Dialog not found"
 
-            # Create evaluation run
             run_id = get_uuid()
             if not name:
                 name = f"Evaluation Run {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
@@ -791,6 +794,7 @@ class EvaluationService(CommonService):
             threading.Thread(
                 target=cls._execute_evaluation,
                 args=(run_id, dataset_id, dialog),
+                kwargs={"parallel": parallel, "max_workers": max_workers},
                 daemon=True,
             ).start()
 
@@ -800,12 +804,17 @@ class EvaluationService(CommonService):
             return False, str(e)
 
     @classmethod
-    def _execute_evaluation(cls, run_id: str, dataset_id: str, dialog: Any):
-        """
-        Execute evaluation for all test cases.
+    def _execute_evaluation(
+        cls,
+        run_id: str,
+        dataset_id: str,
+        dialog: Any,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
+    ):
+        effective_max_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_EVALUATIONS)
+        is_parallel = effective_max_workers > 1
 
-        This method runs the RAG pipeline for each test case and computes metrics.
-        """
         log_buf = io.StringIO()
         log_handler = logging.StreamHandler(log_buf)
         log_handler.setLevel(logging.DEBUG)
@@ -829,9 +838,9 @@ class EvaluationService(CommonService):
             done = 0
             progress_lock = threading.Lock()
             run_wall_start = timer()
-            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
+            with ThreadPoolExecutor(max_workers=effective_max_workers) as executor:
                 futures = {
-                    executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
+                    executor.submit(cls._evaluate_single_case, run_id, case, dialog, is_parallel): case
                     for case in test_cases
                 }
                 for future in as_completed(futures):
@@ -875,18 +884,7 @@ class EvaluationService(CommonService):
 
     @classmethod
     def _evaluate_single_case(cls, run_id: str, case: Dict[str, Any],
-                             dialog: Any) -> Optional[Dict[str, Any]]:
-        """
-        Evaluate a single test case.
-
-        Args:
-            run_id: Evaluation run ID
-            case: Test case dictionary
-            dialog: Dialog configuration
-
-        Returns:
-            Result dictionary or None if failed
-        """
+                             dialog: Any, is_parallel: bool = False) -> Optional[Dict[str, Any]]:
         try:
             # Prepare messages
             messages = [{"role": "user", "content": case["question"]}]
@@ -953,6 +951,7 @@ class EvaluationService(CommonService):
                 model_name_hint=model_name_hint,
                 question=case["question"],
                 generated_answer=answer,
+                is_parallel=is_parallel,
             )
             case_status = cls._derive_case_status(telemetry=telemetry)
 
@@ -1149,6 +1148,14 @@ class EvaluationService(CommonService):
             "telemetry_complete_rate": (ok_count / completed_count) if completed_count else 0.0,
         }
 
+        exec_time_vals = [
+            r.get("execution_time", 0)
+            for r in hydrated_results
+            if r.get("case_status") != cls.CASE_STATUS_FAILED
+        ]
+        if exec_time_vals:
+            summary["sum_execution_time_s"] = round(sum(exec_time_vals), 3)
+
         if run_wall_seconds is not None:
             summary["run_duration_s"] = round(run_wall_seconds, 3)
 
@@ -1171,7 +1178,13 @@ class EvaluationService(CommonService):
     # ==================== Rerun Failed ====================
 
     @classmethod
-    def rerun_failed(cls, source_run_id: str, user_id: str) -> Tuple[bool, str]:
+    def rerun_failed(
+        cls,
+        source_run_id: str,
+        user_id: str,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
+    ) -> Tuple[bool, str]:
         try:
             source_run = EvaluationRun.get_or_none(EvaluationRun.id == source_run_id)
             if not source_run:
@@ -1235,6 +1248,7 @@ class EvaluationService(CommonService):
             threading.Thread(
                 target=cls._execute_rerun,
                 args=(run_id, source_run.dataset_id, dialog, rerun_case_ids, len(ok_results)),
+                kwargs={"parallel": parallel, "max_workers": max_workers},
                 daemon=True,
             ).start()
 
@@ -1251,7 +1265,12 @@ class EvaluationService(CommonService):
         dialog: Any,
         rerun_case_ids: set,
         pre_copied_count: int,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
     ):
+        effective_max_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_EVALUATIONS)
+        is_parallel = effective_max_workers > 1
+
         log_buf = io.StringIO()
         log_handler = logging.StreamHandler(log_buf)
         log_handler.setLevel(logging.DEBUG)
@@ -1265,9 +1284,9 @@ class EvaluationService(CommonService):
             done = pre_copied_count
             progress_lock = threading.Lock()
             run_wall_start = timer()
-            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
+            with ThreadPoolExecutor(max_workers=effective_max_workers) as executor:
                 futures = {
-                    executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
+                    executor.submit(cls._evaluate_single_case, run_id, case, dialog, is_parallel): case
                     for case in test_cases
                 }
                 for future in as_completed(futures):
@@ -1669,17 +1688,10 @@ class EvaluationService(CommonService):
     DEFAULT_JUDGE_PROMPT = (
         "You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, "
         "and the RETRIEVED CHUNKS that were provided to the system as context.\n\n"
-        "Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n\n"
-        "Scoring rules:\n"
-        "- score=1 means the answer is factually correct given the chunks and addresses the question.\n"
-        "- score=1 also applies when the ANSWER is the literal `null` (or the string \"null\") AND the RETRIEVED CHUNKS "
-        "genuinely do not contain enough information to answer the question. "
-        "A null answer is the correct, grounded response when the data is absent, insufficient, ambiguous, or "
-        "refers to a different entity/case than the one asked about.\n"
-        "- score=0 means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n"
-        "- score=0 also applies when the ANSWER is null but the RETRIEVED CHUNKS clearly contain a valid answer "
-        "to the question (i.e. the system should not have abstained).\n\n"
-        "Return ONLY valid JSON (no markdown fences) with this schema:\n"
+        "Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n"
+        "- score=1 (true) means the answer is factually correct given the chunks and addresses the question.\n"
+        "- score=0 (false) means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n\n"
+        "Return ONLY valid JSON (no markdown fences) with this schema for EACH request:\n"
         '{"score": 1, "explanation": ""}\n'
         "or\n"
         '{"score": 0, "explanation": "<non-empty reason why the answer failed>"}\n\n'

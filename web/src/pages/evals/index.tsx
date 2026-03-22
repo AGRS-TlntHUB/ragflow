@@ -55,6 +55,7 @@ type EvaluationRun = {
     failed_cases?: number;
     telemetry_complete_rate?: number;
     run_duration_s?: number;
+    sum_execution_time_s?: number;
     avg_ttft_ms?: number;
     avg_tpot_ms?: number;
     avg_total_time_ms?: number;
@@ -641,6 +642,9 @@ export default function Evals() {
   const [logsLoading, setLogsLoading] = useState(false);
   const [showOnlyJudgeFailed, setShowOnlyJudgeFailed] = useState(false);
   const [showOnlyJudgeErrors, setShowOnlyJudgeErrors] = useState(false);
+  const [templateEvalSettings, setTemplateEvalSettings] = useState<
+    Record<string, { parallel: boolean; maxWorkers: number }>
+  >({});
   const filteredResults = useMemo(() => {
     let filtered = results;
     if (showOnlyJudgeFailed) {
@@ -815,6 +819,10 @@ export default function Evals() {
         throw new Error(importResponse.message || 'Failed to import cases');
       }
 
+      const settings = templateEvalSettings[templateId] ?? {
+        parallel: true,
+        maxWorkers: 50,
+      };
       const { data: startRunResponse } =
         await evaluationService.startEvaluationRun(
           {
@@ -822,6 +830,8 @@ export default function Evals() {
               dataset_id: datasetId,
               dialog_id: templateDialogId,
               name: `${template.eval_type} run ${timestamp} ${getTemplateRunTag(template.id)}`,
+              parallel: settings.parallel,
+              max_workers: settings.parallel ? settings.maxWorkers : undefined,
             },
             headers: { 'X-Skip-Error-Notification': '1' },
           },
@@ -1334,6 +1344,14 @@ export default function Evals() {
                       </div>
                     )}
                   </div>
+                  {!running &&
+                    run.metrics_summary?.sum_execution_time_s != null && (
+                      <div className="text-[10px] text-text-secondary mt-0.5">
+                        {formatSecondsToHumanReadable(
+                          run.metrics_summary.sum_execution_time_s,
+                        )}
+                      </div>
+                    )}
                 </button>
               );
             })}
@@ -1360,6 +1378,14 @@ export default function Evals() {
                   {summaryMetrics?.run_duration_s != null
                     ? formatSecondsToHumanReadable(
                         summaryMetrics.run_duration_s,
+                      )
+                    : '-'}
+                </div>
+                <div className="text-text-secondary">Total eval time</div>
+                <div>
+                  {summaryMetrics?.sum_execution_time_s != null
+                    ? formatSecondsToHumanReadable(
+                        summaryMetrics.sum_execution_time_s,
                       )
                     : '-'}
                 </div>
@@ -2018,6 +2044,79 @@ export default function Evals() {
                   className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm"
                   readOnly
                 />
+              </div>
+
+              <div className="pt-2 border-t border-border-default space-y-3">
+                <div className="text-sm font-medium">Run settings</div>
+                <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                  <input
+                    type="checkbox"
+                    className="cursor-pointer"
+                    checked={
+                      (
+                        templateEvalSettings[settingsTemplateId] ?? {
+                          parallel: true,
+                          maxWorkers: 50,
+                        }
+                      ).parallel
+                    }
+                    onChange={(e) => {
+                      const prev = templateEvalSettings[settingsTemplateId] ?? {
+                        parallel: true,
+                        maxWorkers: 50,
+                      };
+                      setTemplateEvalSettings((s) => ({
+                        ...s,
+                        [settingsTemplateId]: {
+                          ...prev,
+                          parallel: e.target.checked,
+                        },
+                      }));
+                    }}
+                  />
+                  Parallel evaluation
+                </label>
+                <div className="space-y-1">
+                  <div className="text-sm text-text-secondary">
+                    Number of parallel evaluations
+                  </div>
+                  <input
+                    type="number"
+                    min={2}
+                    max={200}
+                    value={
+                      (
+                        templateEvalSettings[settingsTemplateId] ?? {
+                          parallel: true,
+                          maxWorkers: 50,
+                        }
+                      ).maxWorkers
+                    }
+                    disabled={
+                      !(
+                        templateEvalSettings[settingsTemplateId] ?? {
+                          parallel: true,
+                          maxWorkers: 50,
+                        }
+                      ).parallel
+                    }
+                    onChange={(e) => {
+                      const prev = templateEvalSettings[settingsTemplateId] ?? {
+                        parallel: true,
+                        maxWorkers: 50,
+                      };
+                      const val = Math.max(
+                        2,
+                        parseInt(e.target.value, 10) || 2,
+                      );
+                      setTemplateEvalSettings((s) => ({
+                        ...s,
+                        [settingsTemplateId]: { ...prev, maxWorkers: val },
+                      }));
+                    }}
+                    className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm disabled:opacity-50"
+                  />
+                </div>
               </div>
             </div>
           )}
