@@ -13,6 +13,7 @@ const {
   create_kb,
   update_kb,
   rm_kb,
+  duplicate_kb,
   get_kb_detail,
   kb_list,
   get_document_list,
@@ -62,6 +63,10 @@ const methods = {
   },
   rmKb: {
     url: rm_kb,
+    method: 'post',
+  },
+  duplicateKb: {
+    url: duplicate_kb,
     method: 'post',
   },
   get_kb_detail: {

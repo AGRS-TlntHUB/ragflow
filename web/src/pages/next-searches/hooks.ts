@@ -277,6 +277,41 @@ export const useDeleteSearch = () => {
   return { data, isError, deleteSearch };
 };
 
+export const useDuplicateSearch = () => {
+  const { t } = useTranslation();
+  const queryClient = useQueryClient();
+  const {
+    data,
+    isError,
+    mutateAsync: duplicateSearchMutation,
+  } = useMutation({
+    mutationKey: ['duplicateSearch'],
+    mutationFn: async (props: { search_id: string }) => {
+      const { data: response } = await searchService.duplicateSearch(props);
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to duplicate search');
+      }
+      queryClient.invalidateQueries({ queryKey: ['searchList'] });
+      return response;
+    },
+    onSuccess: () => {
+      message.success(t('message.duplicated'));
+    },
+    onError: (error: Error) => {
+      message.error(t('message.error', { error: error.message }));
+    },
+  });
+
+  const duplicateSearch = useCallback(
+    (props: { search_id: string }) => {
+      return duplicateSearchMutation(props);
+    },
+    [duplicateSearchMutation],
+  );
+
+  return { data, isError, duplicateSearch };
+};
+
 export type IUpdateSearchProps = Omit<ISearchAppDetailProps, 'id'> & {
   search_id: string;
 };

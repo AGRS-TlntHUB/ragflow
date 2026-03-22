@@ -9,9 +9,9 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { useRemoveDialog } from '@/hooks/use-chat-request';
+import { useDuplicateDialog, useRemoveDialog } from '@/hooks/use-chat-request';
 import { IDialog } from '@/interfaces/database/chat';
-import { PenLine, Trash2 } from 'lucide-react';
+import { Copy, PenLine, Trash2 } from 'lucide-react';
 import { MouseEventHandler, PropsWithChildren, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRenameChat } from './hooks/use-rename-chat';
@@ -26,6 +26,7 @@ export function ChatDropdown({
   }) {
   const { t } = useTranslation();
   const { removeDialog } = useRemoveDialog();
+  const { duplicateDialog } = useDuplicateDialog();
 
   const handleShowChatRenameModal: MouseEventHandler<HTMLDivElement> =
     useCallback(
@@ -40,12 +41,23 @@ export function ChatDropdown({
     removeDialog([chat.id]);
   }, [chat.id, removeDialog]);
 
+  const handleDuplicate: MouseEventHandler<HTMLDivElement> = useCallback(
+    (e) => {
+      e.stopPropagation();
+      duplicateDialog(chat.id);
+    },
+    [chat.id, duplicateDialog],
+  );
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent>
         <DropdownMenuItem onClick={handleShowChatRenameModal}>
           {t('common.rename')} <PenLine />
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleDuplicate}>
+          {t('common.duplicate')} <Copy />
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ConfirmDeleteDialog

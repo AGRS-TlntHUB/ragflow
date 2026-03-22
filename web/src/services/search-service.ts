@@ -6,6 +6,7 @@ const {
   createSearch,
   getSearchList,
   deleteSearch,
+  duplicateSearch,
   getSearchDetail,
   updateSearchSetting,
   askShare,
@@ -23,6 +24,7 @@ const methods = {
     method: 'post',
   },
   deleteSearch: { url: deleteSearch, method: 'post' },
+  duplicateSearch: { url: duplicateSearch, method: 'post' },
   getSearchDetail: {
     url: getSearchDetail,
     method: 'get',

@@ -222,6 +222,29 @@ export const useDeleteKnowledge = () => {
   return { data, loading, deleteKnowledge: mutateAsync };
 };
 
+export const useDuplicateKnowledge = () => {
+  const queryClient = useQueryClient();
+  const {
+    data,
+    isPending: loading,
+    mutateAsync,
+  } = useMutation({
+    mutationKey: ['duplicateKnowledge'],
+    mutationFn: async (id: string) => {
+      const { data } = await kbService.duplicateKb({ kb_id: id });
+      if (data.code === 0) {
+        message.success(i18n.t(`message.duplicated`));
+        queryClient.invalidateQueries({
+          queryKey: [KnowledgeApiAction.FetchKnowledgeListByPage],
+        });
+      }
+      return data?.data ?? [];
+    },
+  });
+
+  return { data, loading, duplicateKnowledge: mutateAsync };
+};
+
 export const useUpdateKnowledge = (shouldFetchList = false) => {
   const knowledgeBaseId = useKnowledgeBaseId();
   const queryClient = useQueryClient();

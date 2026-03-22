@@ -170,6 +170,43 @@ async def list_search_app():
         return server_error_response(e)
 
 
+@manager.route("/duplicate", methods=["post"])  # noqa: F821
+@login_required
+@validate_request("search_id")
+async def duplicate():
+    req = await get_request_json()
+    search_id = req["search_id"]
+    try:
+        tenants = UserTenantService.query(user_id=current_user.id)
+        authorized = any(
+            SearchService.query(tenant_id=t.tenant_id, id=search_id)
+            for t in tenants
+        )
+        if not authorized:
+            return get_json_result(data=False, message="No authorization.", code=RetCode.AUTHENTICATION_ERROR)
+
+        e, s = SearchService.get_by_id(search_id)
+        if not e:
+            return get_data_error_result(message="Search app not found!")
+        s_dict = s.to_dict()
+        new_name = duplicate_name(
+            SearchService.query,
+            name=s_dict["name"] + "(COPY)",
+            tenant_id=current_user.id,
+            status=StatusEnum.VALID.value,
+        )
+        skip = {"id", "create_time", "create_date", "update_time", "update_date"}
+        new_s = {k: v for k, v in s_dict.items() if k not in skip}
+        new_s["id"] = get_uuid()
+        new_s["name"] = new_name
+        with DB.atomic():
+            if not SearchService.save(**new_s):
+                return get_data_error_result(message="Failed to duplicate search app.")
+        return get_json_result(data={"search_id": new_s["id"]})
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route("/rm", methods=["post"])  # noqa: F821
 @login_required
 @validate_request("search_id")

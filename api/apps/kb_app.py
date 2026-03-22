@@ -40,7 +40,7 @@ from api.utils.api_utils import (
     not_allowed_parameters,
     get_request_json,
 )
-from common.misc_utils import thread_pool_exec
+from common.misc_utils import get_uuid, thread_pool_exec
 from api.db import VALID_FILE_TYPES
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.db_models import File
@@ -268,6 +268,114 @@ async def list_kbs():
             if page_number and items_per_page:
                 kbs = kbs[(page_number-1)*items_per_page:page_number*items_per_page]
         return get_json_result(data={"kbs": kbs, "total": total})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/duplicate', methods=['post'])  # noqa: F821
+@login_required
+@validate_request("kb_id")
+async def duplicate():
+    req = await get_request_json()
+    kb_id = req["kb_id"]
+    uid = current_user.id
+    if not KnowledgebaseService.accessible(kb_id, uid):
+        return get_json_result(data=False, message='No authorization.', code=RetCode.AUTHENTICATION_ERROR)
+    try:
+        e, kb = KnowledgebaseService.get_by_id(kb_id)
+        if not e:
+            return get_data_error_result(message="Dataset not found.")
+        kb_dict = kb.to_dict()
+        from api.db.services import duplicate_name
+        new_kb_id = get_uuid()
+        new_name = duplicate_name(
+            KnowledgebaseService.query,
+            name=kb_dict["name"] + "(COPY)",
+            tenant_id=uid,
+            status=StatusEnum.VALID.value,
+        )
+        skip_fields = {"id", "create_time", "create_date", "update_time", "update_date",
+                        "doc_num", "token_num", "chunk_num",
+                        "graphrag_task_id", "graphrag_task_finish_at",
+                        "raptor_task_id", "raptor_task_finish_at",
+                        "mindmap_task_id", "mindmap_task_finish_at"}
+        new_kb = {k: v for k, v in kb_dict.items() if k not in skip_fields}
+        new_kb["id"] = new_kb_id
+        new_kb["name"] = new_name
+        new_kb["doc_num"] = 0
+        new_kb["token_num"] = 0
+        new_kb["chunk_num"] = 0
+        if not KnowledgebaseService.save(**new_kb):
+            return get_data_error_result(message="Failed to duplicate dataset.")
+
+        def _dup_sync():
+            from api.db.services.document_service import DocumentService as DocSvc
+            index_nm = search.index_name(kb.tenant_id)
+            old_index_exists = settings.docStoreConn.index_exist(index_nm, kb_id)
+            doc_id_map = {}
+            for doc in DocSvc.query(kb_id=kb_id):
+                old_doc_id = doc.id
+                new_doc_id = get_uuid()
+                doc_id_map[old_doc_id] = new_doc_id
+                doc_dict = doc.to_dict()
+                doc_skip = {"id", "create_time", "create_date", "update_time", "update_date"}
+                new_doc = {k: v for k, v in doc_dict.items() if k not in doc_skip}
+                new_doc["id"] = new_doc_id
+                new_doc["kb_id"] = new_kb_id
+                DocSvc.save(**new_doc)
+                try:
+                    loc = doc_dict.get("location")
+                    if loc:
+                        blob = settings.STORAGE_IMPL.get(kb_id, loc)
+                        if blob:
+                            settings.STORAGE_IMPL.put(new_kb_id, loc, blob)
+                except Exception as ex:
+                    logging.warning(f"Could not copy storage for doc {old_doc_id}: {ex}")
+
+            if old_index_exists and doc_id_map:
+                try:
+                    for old_did, new_did in doc_id_map.items():
+                        offset = 0
+                        batch_size = 128
+                        while True:
+                            res = settings.docStoreConn.search(
+                                select_fields=[], highlight_fields=[],
+                                condition={"kb_id": kb_id, "doc_id": old_did},
+                                match_expressions=[], order_by=OrderByExpr(),
+                                offset=offset, limit=batch_size,
+                                index_names=index_nm, dataset_ids=[kb_id]
+                            )
+                            chunk_ids = settings.docStoreConn.get_doc_ids(res)
+                            if not chunk_ids:
+                                break
+                            rows = []
+                            for cid in chunk_ids:
+                                chunk = settings.docStoreConn.get(cid, index_nm, [kb_id])
+                                if not chunk:
+                                    continue
+                                chunk["kb_id"] = new_kb_id
+                                chunk["doc_id"] = new_did
+                                chunk.pop("id", None)
+                                rows.append(chunk)
+                            if rows:
+                                settings.docStoreConn.insert(rows, index_nm, new_kb_id)
+                            offset += batch_size
+                            if len(chunk_ids) < batch_size:
+                                break
+                except Exception as ex:
+                    logging.warning(f"Could not copy chunks for dataset {kb_id}: {ex}")
+
+            new_doc_count = DocSvc.model.select().where(DocSvc.model.kb_id == new_kb_id).count()
+            total_tokens = sum(d.token_num for d in DocSvc.query(kb_id=new_kb_id))
+            total_chunks = sum(d.chunk_num for d in DocSvc.query(kb_id=new_kb_id))
+            KnowledgebaseService.update_by_id(new_kb_id, {
+                "doc_num": new_doc_count,
+                "token_num": total_tokens,
+                "chunk_num": total_chunks,
+            })
+
+        await thread_pool_exec(_dup_sync)
+        return get_json_result(data={"kb_id": new_kb_id})
     except Exception as e:
         return server_error_response(e)
 

@@ -9,10 +9,10 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { PenLine, Trash2 } from 'lucide-react';
+import { Copy, PenLine, Trash2 } from 'lucide-react';
 import { MouseEventHandler, PropsWithChildren, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ISearchAppProps, useDeleteSearch } from './hooks';
+import { ISearchAppProps, useDeleteSearch, useDuplicateSearch } from './hooks';
 
 export function SearchDropdown({
   children,
@@ -24,6 +24,7 @@ export function SearchDropdown({
 }) {
   const { t } = useTranslation();
   const { deleteSearch } = useDeleteSearch();
+  const { duplicateSearch } = useDuplicateSearch();
   const handleShowChatRenameModal: MouseEventHandler<HTMLDivElement> =
     useCallback(
       (e) => {
@@ -36,12 +37,23 @@ export function SearchDropdown({
     deleteSearch({ search_id: dataset.id });
   }, [dataset.id, deleteSearch]);
 
+  const handleDuplicate: MouseEventHandler<HTMLDivElement> = useCallback(
+    (e) => {
+      e.stopPropagation();
+      duplicateSearch({ search_id: dataset.id });
+    },
+    [dataset.id, duplicateSearch],
+  );
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>{children}</DropdownMenuTrigger>
       <DropdownMenuContent>
         <DropdownMenuItem onClick={handleShowChatRenameModal}>
           {t('common.rename')} <PenLine />
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleDuplicate}>
+          {t('common.duplicate')} <Copy />
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <ConfirmDeleteDialog

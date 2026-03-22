@@ -57,6 +57,54 @@ def templates():
     return get_json_result(data=[c.to_dict() for c in CanvasTemplateService.get_all()])
 
 
+@manager.route('/duplicate', methods=['POST'])  # noqa: F821
+@validate_request("canvas_id")
+@login_required
+async def duplicate():
+    req = await get_request_json()
+    canvas_id = req["canvas_id"]
+    if not UserCanvasService.accessible(canvas_id, current_user.id):
+        return get_json_result(data=False, message='No authorization.', code=RetCode.OPERATING_ERROR)
+    try:
+        e, cvs = UserCanvasService.get_by_id(canvas_id)
+        if not e:
+            return get_data_error_result(message="Canvas not found.")
+        cvs_dict = cvs.to_dict()
+        new_title = cvs_dict["title"] + "(COPY)"
+        existing = UserCanvasService.query(
+            user_id=current_user.id, title=new_title.strip(),
+            canvas_category=cvs_dict.get("canvas_category", CanvasCategory.Agent),
+        )
+        if existing:
+            from api.db.services import duplicate_name as dup_name
+            def _title_exists(name: str, **_kw) -> bool:
+                return bool(UserCanvasService.query(
+                    user_id=current_user.id, title=name.strip(),
+                    canvas_category=cvs_dict.get("canvas_category", CanvasCategory.Agent),
+                ))
+            new_title = dup_name(_title_exists, name=new_title)
+
+        skip = {"id", "create_time", "create_date", "update_time", "update_date"}
+        new_cvs = {k: v for k, v in cvs_dict.items() if k not in skip}
+        new_cvs["id"] = get_uuid()
+        new_cvs["title"] = new_title
+        new_cvs["release"] = False
+        if not UserCanvasService.save(**new_cvs):
+            return get_data_error_result(message="Failed to duplicate canvas.")
+
+        for ver in UserCanvasVersionService.list_by_canvas_id(canvas_id):
+            v_dict = ver.to_dict()
+            v_skip = {"id", "create_time", "create_date", "update_time", "update_date"}
+            new_v = {k: v for k, v in v_dict.items() if k not in v_skip}
+            new_v["id"] = get_uuid()
+            new_v["user_canvas_id"] = new_cvs["id"]
+            UserCanvasVersionService.save(**new_v)
+
+        return get_json_result(data=new_cvs)
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route('/rm', methods=['POST'])  # noqa: F821
 @validate_request("canvas_ids")
 @login_required

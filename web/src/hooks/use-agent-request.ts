@@ -232,6 +232,30 @@ export const useDeleteAgent = () => {
   return { data, loading, deleteAgent: mutateAsync };
 };
 
+export const useDuplicateAgent = () => {
+  const queryClient = useQueryClient();
+  const {
+    data,
+    isPending: loading,
+    mutateAsync,
+  } = useMutation({
+    mutationKey: ['duplicateAgent'],
+    mutationFn: async (canvasId: string) => {
+      const { data } = await agentService.duplicateCanvas({
+        canvas_id: canvasId,
+      });
+      if (data.code === 0) {
+        queryClient.invalidateQueries({
+          queryKey: [AgentApiAction.FetchAgentListByPage],
+        });
+      }
+      return data?.data ?? [];
+    },
+  });
+
+  return { data, loading, duplicateAgent: mutateAsync };
+};
+
 export const useFetchAgent = (): {
   data: IFlow;
   loading: boolean;

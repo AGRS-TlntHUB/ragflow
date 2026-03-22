@@ -139,6 +139,31 @@ export const useRemoveDialog = () => {
   return { data, loading, removeDialog: mutateAsync };
 };
 
+export const useDuplicateDialog = () => {
+  const queryClient = useQueryClient();
+  const { t } = useTranslation();
+
+  const {
+    data,
+    isPending: loading,
+    mutateAsync,
+  } = useMutation({
+    mutationKey: ['duplicateDialog'],
+    mutationFn: async (dialogId: string) => {
+      const { data } = await chatService.duplicateDialog({
+        dialog_id: dialogId,
+      });
+      if (data.code === 0) {
+        queryClient.invalidateQueries({ queryKey: ['fetchDialogList'] });
+        message.success(t('message.duplicated'));
+      }
+      return data.code;
+    },
+  });
+
+  return { data, loading, duplicateDialog: mutateAsync };
+};
+
 export const useSetDialog = () => {
   const queryClient = useQueryClient();
   const { t } = useTranslation();

@@ -13,6 +13,7 @@ const {
   listCanvas,
   resetCanvas,
   removeCanvas,
+  duplicateCanvas,
   runCanvas,
   listTemplates,
   testDbConnect,
@@ -64,6 +65,10 @@ const methods = {
   },
   removeCanvas: {
     url: removeCanvas,
+    method: 'post',
+  },
+  duplicateCanvas: {
+    url: duplicateCanvas,
     method: 'post',
   },
   runCanvas: {

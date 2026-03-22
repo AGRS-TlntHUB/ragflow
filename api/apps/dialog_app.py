@@ -230,6 +230,47 @@ async def list_dialogs_next():
         return server_error_response(e)
 
 
+@manager.route('/duplicate', methods=['POST'])  # noqa: F821
+@login_required
+@validate_request("dialog_id")
+async def duplicate():
+    req = await get_request_json()
+    dialog_id = req["dialog_id"]
+    try:
+        e, dia = DialogService.get_by_id(dialog_id)
+        if not e:
+            return get_data_error_result(message="Dialog not found!")
+        tenants = UserTenantService.query(user_id=current_user.id)
+        authorized = any(
+            DialogService.query(tenant_id=t.tenant_id, id=dialog_id)
+            for t in tenants
+        )
+        if not authorized:
+            return get_json_result(data=False, message='No authorization.', code=RetCode.OPERATING_ERROR)
+
+        dia_dict = dia.to_dict()
+        existing_names = {
+            d.name.casefold()
+            for d in DialogService.query(tenant_id=current_user.id, status=StatusEnum.VALID.value)
+            if d.name
+        }
+        new_name = dia_dict["name"] + "(COPY)"
+        if new_name.casefold() in existing_names:
+            def _name_exists(name: str, **_kw) -> bool:
+                return name.casefold() in existing_names
+            new_name = duplicate_name(_name_exists, name=new_name)
+
+        skip = {"id", "create_time", "create_date", "update_time", "update_date"}
+        new_dia = {k: v for k, v in dia_dict.items() if k not in skip}
+        new_dia["id"] = get_uuid()
+        new_dia["name"] = new_name
+        if not DialogService.save(**new_dia):
+            return get_data_error_result(message="Failed to duplicate dialog!")
+        return get_json_result(data=new_dia)
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route('/rm', methods=['POST'])  # noqa: F821
 @login_required
 @validate_request("dialog_ids")
