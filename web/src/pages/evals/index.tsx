@@ -252,6 +252,14 @@ const formatBytes = (bytes: number | null | undefined) => {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 };
 
+const formatFailedPercent = (
+  failedCount: number,
+  totalCount: number | undefined,
+) => {
+  if (!totalCount) return '-';
+  return `${((failedCount / totalCount) * 100).toFixed(1)}%`;
+};
+
 function TelemetryDetails({ telemetry }: { telemetry: EvaluationTelemetry }) {
   const timing = telemetry.timing;
   const usage = telemetry.usage;
@@ -1062,15 +1070,23 @@ export default function Evals() {
     );
   }, [selectedRun, canDownloadArtifacts, results]);
 
-  const hasJudgeErrors = useMemo(() => {
+  const hasJudgeFailed = useMemo(() => {
+    if (!selectedRun || !canDownloadArtifacts) return false;
+    return results.some(
+      (r) => hasJudgeResult(r.judge_result) && r.judge_result.score === 0,
+    );
+  }, [selectedRun, canDownloadArtifacts, results]);
+
+  const hasJudgeErrored = useMemo(() => {
     if (!selectedRun || !canDownloadArtifacts) return false;
     return results.some((r) => isJudgeError(r.judge_result));
   }, [selectedRun, canDownloadArtifacts, results]);
 
-  const [rerunJudgeErrorsLoading, setRerunJudgeErrorsLoading] = useState(false);
-  const handleRerunJudgeErrors = async () => {
+  const [rerunJudgeErroredLoading, setRerunJudgeErroredLoading] =
+    useState(false);
+  const handleRerunJudgeErrored = async () => {
     if (!selectedRun?.id) return;
-    setRerunJudgeErrorsLoading(true);
+    setRerunJudgeErroredLoading(true);
     try {
       const { data: response } = await evaluationService.runEvaluationLlmJudge(
         {
@@ -1081,16 +1097,20 @@ export default function Evals() {
         true,
       );
       if (response.code !== 0) {
-        throw new Error(response.message || 'Failed to rerun judge errors');
+        throw new Error(
+          response.message || 'Failed to rerun errored LLM judge cases',
+        );
       }
-      message.success('Rerunning judge errors');
+      message.success('Re-running errored LLM judge cases');
       await refetchRuns();
     } catch (error) {
       message.error(
-        error instanceof Error ? error.message : 'Failed to rerun judge errors',
+        error instanceof Error
+          ? error.message
+          : 'Failed to rerun errored LLM judge cases',
       );
     } finally {
-      setRerunJudgeErrorsLoading(false);
+      setRerunJudgeErroredLoading(false);
     }
   };
 
@@ -1155,6 +1175,20 @@ export default function Evals() {
 
   const selectedRetrievedChunks = selectedResult?.retrieved_chunks || [];
   const summaryMetrics = selectedRun?.metrics_summary;
+  const totalEvalCases = summaryMetrics?.total_cases || results.length;
+  const requestFailedCount = results.filter(
+    (item) => normalizeStatus(item.case_status || '') === 'FAILED',
+  ).length;
+  const telemetryFailedCount = results.filter(
+    (item) => normalizeStatus(item.case_status || '') === 'MISSING_TELEMETRY',
+  ).length;
+  const judgeFailedCount = results.filter(
+    (item) =>
+      hasJudgeResult(item.judge_result) && item.judge_result.score === 0,
+  ).length;
+  const judgeErroredCount = results.filter((item) =>
+    isJudgeError(item.judge_result),
+  ).length;
 
   return (
     <article className="size-full p-5 flex gap-4 overflow-hidden">
@@ -1326,7 +1360,7 @@ export default function Evals() {
                   {' / '}
                   {formatMs(summaryMetrics?.avg_tpot_ms)}
                 </div>
-                <div className="text-text-secondary">Status</div>
+                <div className="text-text-secondary">Eval statistics</div>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center gap-3 flex-wrap">
                     <span className="inline-flex items-center gap-1.5 text-xs">
@@ -1352,6 +1386,9 @@ export default function Evals() {
                           ? 'Failed'
                           : 'OK';
                       })()}
+                      {' · '}
+                      failed{' '}
+                      {formatFailedPercent(requestFailedCount, totalEvalCases)}
                     </span>
                     <span className="inline-flex items-center gap-1.5 text-xs">
                       <span
@@ -1378,24 +1415,47 @@ export default function Evals() {
                           ? 'Missing'
                           : 'OK';
                       })()}
+                      {' · '}
+                      failed{' '}
+                      {formatFailedPercent(
+                        telemetryFailedCount,
+                        totalEvalCases,
+                      )}
                     </span>
                     <span className="inline-flex items-center gap-1.5 text-xs">
                       <span
                         className={`w-2 h-2 rounded-full ${(() => {
                           const js = (effectiveJudgeStatus || '').toUpperCase();
                           if (js === 'RUNNING') return 'bg-state-info';
-                          if (js === 'OK') return 'bg-state-success';
-                          if (js === 'FAILED') return 'bg-state-error';
-                          return 'bg-fill-tertiary';
+                          if (!js) return 'bg-fill-tertiary';
+                          if (
+                            judgeFailedCount > 0 ||
+                            judgeErroredCount > 0 ||
+                            js === 'FAILED'
+                          )
+                            return 'bg-state-error';
+                          return 'bg-state-success';
                         })()}`}
                       />
                       LLM judge:{' '}
                       {(() => {
                         const js = (effectiveJudgeStatus || '').toUpperCase();
                         if (js === 'RUNNING') return 'Running';
-                        if (js === 'OK') return 'OK';
-                        if (js === 'FAILED') return 'Failed';
-                        return '-';
+                        if (!js) return '-';
+                        const hasBadResults =
+                          judgeFailedCount > 0 ||
+                          judgeErroredCount > 0 ||
+                          js === 'FAILED';
+                        const parts: string[] = [];
+                        if (!hasBadResults) parts.push('OK');
+                        parts.push(
+                          `failed ${formatFailedPercent(judgeFailedCount, totalEvalCases)}`,
+                        );
+                        if (judgeErroredCount > 0)
+                          parts.push(
+                            `errored ${formatFailedPercent(judgeErroredCount, totalEvalCases)}`,
+                          );
+                        return parts.join(' · ');
                       })()}
                     </span>
                   </div>
@@ -1415,40 +1475,42 @@ export default function Evals() {
                         Show logs
                       </button>
                     )}
-                    {hasFailedOrMissing && (
-                      <button
-                        type="button"
-                        onClick={() => void handleRerunFailed()}
-                        disabled={rerunLoading}
-                        className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
-                      >
-                        <LucideRefreshCw
-                          className={`size-3.5 ${rerunLoading ? 'animate-spin' : ''}`}
-                        />
-                        {rerunLoading ? 'Rerunning...' : 'Rerun failed'}
-                      </button>
-                    )}
-                    {hasJudgeErrors && (
-                      <button
-                        type="button"
-                        onClick={() => void handleRerunJudgeErrors()}
-                        disabled={
-                          rerunJudgeErrorsLoading ||
-                          judgeRunning ||
-                          (effectiveJudgeStatus || '').toUpperCase() ===
-                            'RUNNING'
-                        }
-                        className="h-7 px-2 rounded-md border border-orange-400/50 text-xs text-orange-600 hover:bg-orange-500/10 inline-flex items-center gap-1 disabled:opacity-50"
-                      >
-                        <LucideRefreshCw
-                          className={`size-3.5 ${rerunJudgeErrorsLoading ? 'animate-spin' : ''}`}
-                        />
-                        {rerunJudgeErrorsLoading
-                          ? 'Rerunning...'
-                          : 'Rerun judge errors'}
-                      </button>
-                    )}
                   </div>
+                </div>
+                <div className="text-text-secondary">Re-run</div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  {hasFailedOrMissing && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRerunFailed()}
+                      disabled={rerunLoading}
+                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <LucideRefreshCw
+                        className={`size-3.5 ${rerunLoading ? 'animate-spin' : ''}`}
+                      />
+                      {rerunLoading ? 'Re-running...' : 'Re-run failed API'}
+                    </button>
+                  )}
+                  {hasJudgeErrored && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRerunJudgeErrored()}
+                      disabled={
+                        rerunJudgeErroredLoading ||
+                        judgeRunning ||
+                        (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
+                      }
+                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <LucideRefreshCw
+                        className={`size-3.5 ${rerunJudgeErroredLoading ? 'animate-spin' : ''}`}
+                      />
+                      {rerunJudgeErroredLoading
+                        ? 'Re-running...'
+                        : 'Re-run errored LLM judge'}
+                    </button>
+                  )}
                 </div>
                 <div className="text-text-secondary">Submission</div>
                 <div className="flex items-center gap-2 flex-wrap">

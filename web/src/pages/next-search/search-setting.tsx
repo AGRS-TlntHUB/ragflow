@@ -81,6 +81,7 @@ const SearchSettingFormSchema = z
       llm_setting: z.object(LlmSettingSchema),
       related_search: z.boolean(),
       query_mindmap: z.boolean(),
+      multi_search_enabled: z.boolean(),
       ...MetadataFilterSchema,
     }),
   })
@@ -162,6 +163,7 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
         keyword: search_config?.keyword || false,
         related_search: search_config?.related_search || false,
         query_mindmap: search_config?.query_mindmap || false,
+        multi_search_enabled: search_config?.multi_search_enabled || false,
         meta_data_filter: search_config?.meta_data_filter,
       },
     });
@@ -465,7 +467,7 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
                   name="search_config.top_k"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Top K</FormLabel>
+                      <FormLabel>{t('knowledgeDetails.topK')}</FormLabel>
                       <div
                         className={cn(
                           'flex items-center gap-4 justify-between',
@@ -497,6 +499,22 @@ const SearchSetting: React.FC<SearchSettingProps> = ({
                 />
               </>
             )}
+            {/* Multi-search */}
+            <FormField
+              control={formMethods.control}
+              name="search_config.multi_search_enabled"
+              render={({ field }) => (
+                <FormItem className="flex flex-row items-start space-x-3 space-y-0">
+                  <FormControl>
+                    <Switch
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <FormLabel>{t('search.multiSearch')}</FormLabel>
+                </FormItem>
+              )}
+            />
             {/* AI Summary */}
             <FormField
               control={formMethods.control}

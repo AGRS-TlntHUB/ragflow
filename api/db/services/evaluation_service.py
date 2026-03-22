@@ -1746,6 +1746,7 @@ class EvaluationService(CommonService):
         model: str = "",
         prompt: str = "",
         only_errors: bool = False,
+        only_failed: bool = False,
     ) -> Tuple[bool, str]:
         model = (model or "").strip() or cls.DEFAULT_JUDGE_MODEL
         prompt = (prompt or "").strip() or cls.DEFAULT_JUDGE_PROMPT
@@ -1768,13 +1769,21 @@ class EvaluationService(CommonService):
 
         threading.Thread(
             target=cls._execute_llm_judge,
-            args=(run_id, creds, model, prompt, only_errors),
+            args=(run_id, creds, model, prompt, only_errors, only_failed),
             daemon=True,
         ).start()
         return True, run_id
 
     @classmethod
-    def _execute_llm_judge(cls, run_id: str, creds: Dict[str, Any], model: str, system_prompt: str, only_errors: bool = False):
+    def _execute_llm_judge(
+        cls,
+        run_id: str,
+        creds: Dict[str, Any],
+        model: str,
+        system_prompt: str,
+        only_errors: bool = False,
+        only_failed: bool = False,
+    ):
         try:
             result_rows = list(
                 EvaluationResult.select().where(EvaluationResult.run_id == run_id)
@@ -1793,6 +1802,11 @@ class EvaluationService(CommonService):
                 result_rows = [
                     r for r in result_rows
                     if isinstance(r.judge_result, dict) and r.judge_result.get("score") == -1
+                ]
+            elif only_failed:
+                result_rows = [
+                    r for r in result_rows
+                    if isinstance(r.judge_result, dict) and r.judge_result.get("score") == 0
                 ]
 
             all_ok = True

@@ -366,7 +366,7 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
       filesSelected: 'Files selected',
       upload: 'Upload',
       run: 'Parse',
-      runNoMetadata: 'Parse files with no metadata',
+      runNoMetadata: 'Parse failed runs',
       runningStatus0: 'Pending',
       runningStatus1: 'Parsing',
       runningStatus2: 'Cancelled',
@@ -401,8 +401,8 @@ Example: A 1 KB message with 1024-dim embedding uses ~9 KB. The 5 MB default lim
       rerankModel: 'Rerank model',
       rerankPlaceholder: 'Select value',
       rerankTip: `Optional. If left empty, RAGFlow will use a combination of weighted keyword similarity and weighted vector cosine similarity; if a rerank model is selected, a weighted reranking score will replace the weighted vector cosine similarity. Please be aware that using a rerank model will significantly increase the system's response time. If you wish to use a rerank model, ensure you use a SaaS reranker; if you prefer a locally deployed rerank model, ensure you start RAGFlow with docker-compose-gpu.yml.`,
-      topK: 'Top-K',
-      topKTip: `Used together with the Rerank model, this setting defines the number of text chunks to be sent to the specified reranking model.`,
+      topK: 'Top-K (per search)',
+      topKTip: `Used together with the Rerank model, this setting defines the number of text chunks to be sent to the specified reranking model per individual search.`,
       delimiter: `Delimiter for text`,
       delimiterTip:
         'A delimiter or separator can consist of one or multiple special characters. If it is multiple characters, ensure they are enclosed in backticks( ``). For example, if you configure your delimiters like this: \\n`##`;, then your texts will be separated at line breaks, double hash symbols (##), and semicolons.',
@@ -915,6 +915,9 @@ This auto-tagging feature enhances retrieval by adding another layer of domain-s
       multiTurn: 'Multi-turn optimization',
       multiTurnTip:
         'This optimizes user queries using context in a multi-round conversation. When enabled, it will consume additional LLM tokens.',
+      multiSearch: 'Metadata multi-search',
+      multiSearchTip:
+        'When enabled, each metadata condition triggers a separate parallel search. Results are aggregated and deduplicated.',
       howUseId: 'How to use chat ID?',
       description: 'Description of assistant',
       descriptionPlaceholder: "I'm a chat assistant.",
@@ -2505,6 +2508,10 @@ Important structured information may include: names, dates, locations, events, k
       enableWebSearch: 'Enable web search',
       enableRelatedSearch: 'Enable related search',
       showQueryMindmap: 'Show query mindmap',
+      multiSearch: 'Metadata multi-search',
+      multiSearchTip:
+        'When enabled, each metadata (key, value) condition triggers a separate parallel search. Results are aggregated and deduplicated.',
+      multiSearchAll: 'All results',
       embedApp: 'Embed app',
       relatedSearch: 'Related search',
       descriptionValue: 'You are an intelligent assistant.',

@@ -604,12 +604,14 @@ async def run_llm_judge(run_id):
         model = req.get("model", "")
         prompt = req.get("prompt", "")
         only_errors = bool(req.get("only_errors", False))
+        only_failed = bool(req.get("only_failed", False))
         success, result = EvaluationService.run_llm_judge(
             run_id=run_id,
             tenant_id=current_user.id,
             model=model,
             prompt=prompt,
             only_errors=only_errors,
+            only_failed=only_failed,
         )
         if not success:
             return get_data_error_result(message=result)

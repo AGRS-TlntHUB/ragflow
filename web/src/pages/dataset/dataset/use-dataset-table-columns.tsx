@@ -88,6 +88,17 @@ export function useDatasetTableColumns({
         (!doc.meta_fields || Object.keys(doc.meta_fields).length === 0),
     )
     .map((doc) => doc.id);
+  const failedDocumentIds = runnableDocuments
+    .filter(
+      (doc) =>
+        doc.run !== RunningStatus.RUNNING &&
+        doc.run !== RunningStatus.SCHEDULE &&
+        doc.run === RunningStatus.FAIL,
+    )
+    .map((doc) => doc.id);
+  const runAllDocumentIds = Array.from(
+    new Set([...emptyMetadataDocumentIds, ...failedDocumentIds]),
+  );
   const allDocumentIds = documents.map((doc) => doc.id);
   const allEnabled =
     documents.length > 0 && enabledDocumentIds.length === documents.length;
@@ -397,10 +408,10 @@ export function useDatasetTableColumns({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                disabled={emptyMetadataDocumentIds.length === 0}
+                disabled={runAllDocumentIds.length === 0}
                 onClick={() =>
                   runDocumentByIds({
-                    documentIds: emptyMetadataDocumentIds,
+                    documentIds: runAllDocumentIds,
                     run: 1,
                   })
                 }

@@ -195,6 +195,7 @@ export interface ISearchAppDetailProps {
           }
       >;
     };
+    multi_search_enabled?: boolean;
   };
   tenant_id: string;
   update_time: number;

@@ -347,6 +347,7 @@ export const useSendQuestion = (
         searchConfig?.cross_languages ??
         (searchConfig as any)?.chat_settingcross_languages ??
         [],
+      multi_search_enabled: searchConfig?.multi_search_enabled,
     }),
     [kbIds, searchId, searchConfig],
   );
@@ -520,7 +521,8 @@ export const useSearching = ({
     searchStr,
     searchData.id,
   );
-  const { chunks, total, applied_meta_filters } = useSelectTestingResult();
+  const { chunks, total, applied_meta_filters, multi_search_results } =
+    useSelectTestingResult();
 
   const handleSearch = useCallback(
     (value: string) => {
@@ -575,6 +577,7 @@ export const useSearching = ({
     pagination,
     onChange,
     applied_meta_filters,
+    multi_search_results,
   };
 };
 
