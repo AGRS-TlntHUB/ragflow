@@ -67,6 +67,7 @@ class EvaluationService(CommonService):
     SINGLE_SHOT_CHAT_EVAL_TYPE = "Single-Shot Chat"
     SINGLE_SHOT_CHAT_SCRIPT_PATH = "ragflow/evals/single_shot_chat.py"
     MAX_CONCURRENT_EVALUATIONS = 50
+    MAX_CONCURRENT_JUDGE_CALLS = 20
     CASE_STATUS_OK = "OK"
     CASE_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
     CASE_STATUS_FAILED = "FAILED"
@@ -1668,10 +1669,17 @@ class EvaluationService(CommonService):
     DEFAULT_JUDGE_PROMPT = (
         "You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, "
         "and the RETRIEVED CHUNKS that were provided to the system as context.\n\n"
-        "Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n"
-        "- score=1 (true) means the answer is factually correct given the chunks and addresses the question.\n"
-        "- score=0 (false) means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n\n"
-        "Return ONLY valid JSON (no markdown fences) with this schema for EACH request:\n"
+        "Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n\n"
+        "Scoring rules:\n"
+        "- score=1 means the answer is factually correct given the chunks and addresses the question.\n"
+        "- score=1 also applies when the ANSWER is the literal `null` (or the string \"null\") AND the RETRIEVED CHUNKS "
+        "genuinely do not contain enough information to answer the question. "
+        "A null answer is the correct, grounded response when the data is absent, insufficient, ambiguous, or "
+        "refers to a different entity/case than the one asked about.\n"
+        "- score=0 means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n"
+        "- score=0 also applies when the ANSWER is null but the RETRIEVED CHUNKS clearly contain a valid answer "
+        "to the question (i.e. the system should not have abstained).\n\n"
+        "Return ONLY valid JSON (no markdown fences) with this schema:\n"
         '{"score": 1, "explanation": ""}\n'
         "or\n"
         '{"score": 0, "explanation": "<non-empty reason why the answer failed>"}\n\n'
@@ -1750,13 +1758,34 @@ class EvaluationService(CommonService):
                 "Configure the model in RAGFlow's Model Providers settings."
             )
 
-        EvaluationRun.update(judge_status="RUNNING").where(EvaluationRun.id == run_id).execute()
+        EvaluationRun.update(
+            judge_status="RUNNING",
+            judge_progress=0.0,
+            judge_progress_msg="0/0",
+        ).where(EvaluationRun.id == run_id).execute()
 
         threading.Thread(
             target=cls._execute_llm_judge,
             args=(run_id, creds, model, prompt, only_errors, only_failed),
             daemon=True,
         ).start()
+        return True, run_id
+
+    @classmethod
+    def _is_judge_cancelled(cls, run_id: str) -> bool:
+        run = EvaluationRun.get_or_none(EvaluationRun.id == run_id)
+        return run is not None and (run.judge_status or "").upper() == "CANCELLED"
+
+    @classmethod
+    def cancel_judge(cls, run_id: str) -> Tuple[bool, str]:
+        run = EvaluationRun.get_or_none(EvaluationRun.id == run_id)
+        if not run:
+            return False, "Evaluation run not found"
+        if (run.judge_status or "").upper() != "RUNNING":
+            return False, "Judge is not running"
+        EvaluationRun.update(judge_status="CANCELLED").where(
+            EvaluationRun.id == run_id
+        ).execute()
         return True, run_id
 
     @classmethod
@@ -1794,8 +1823,20 @@ class EvaluationService(CommonService):
                     if isinstance(r.judge_result, dict) and r.judge_result.get("score") == 0
                 ]
 
+            total = len(result_rows)
+            done = 0
+            progress_lock = threading.Lock()
             all_ok = True
-            for row in result_rows:
+            cancelled = False
+
+            EvaluationRun.update(
+                judge_progress=0.0,
+                judge_progress_msg=f"0/{total}",
+            ).where(EvaluationRun.id == run_id).execute()
+
+            def _judge_one(row):
+                if cls._is_judge_cancelled(run_id):
+                    return None
                 result_dict = row.to_dict()
                 case = case_map.get(result_dict.get("case_id"), {})
                 question = (
@@ -1808,13 +1849,11 @@ class EvaluationService(CommonService):
                 chunks_text = "\n---\n".join(
                     cls._chunk_to_text(c) for c in chunks if isinstance(c, dict)
                 )
-
                 user_message = (
                     f"QUESTION:\n{question}\n\n"
                     f"ANSWER:\n{answer}\n\n"
                     f"RETRIEVED CHUNKS:\n{chunks_text}"
                 )
-
                 try:
                     judge_result = cls._call_judge_llm(creds, model, system_prompt, user_message)
                 except Exception as e:
@@ -1825,11 +1864,43 @@ class EvaluationService(CommonService):
                         "score": -1 if is_rate_limit else 0,
                         "explanation": f"Judge call failed: {e}",
                     }
-                    all_ok = False
-
                 EvaluationResult.update(judge_result=judge_result).where(
                     EvaluationResult.id == result_dict["id"]
                 ).execute()
+                return judge_result
+
+            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_JUDGE_CALLS) as executor:
+                futures = {executor.submit(_judge_one, row): row for row in result_rows}
+                for future in as_completed(futures):
+                    if cls._is_judge_cancelled(run_id):
+                        cancelled = True
+                        for f in futures:
+                            f.cancel()
+                        break
+                    try:
+                        jr = future.result()
+                        if jr is None:
+                            cancelled = True
+                            break
+                        if jr.get("score") in (-1, 0) and "Judge call failed" in (jr.get("explanation") or ""):
+                            all_ok = False
+                    except Exception as exc:
+                        logging.error("Unhandled error in judge worker: %s", exc)
+                        all_ok = False
+                    with progress_lock:
+                        done += 1
+                        EvaluationRun.update(
+                            judge_progress=done / total,
+                            judge_progress_msg=f"{done}/{total}",
+                        ).where(EvaluationRun.id == run_id).execute()
+
+            if cancelled:
+                EvaluationRun.update(
+                    judge_status="CANCELLED",
+                    judge_progress=done / total if total else 0.0,
+                    judge_progress_msg=f"{done}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
+                return
 
             if only_errors and all_ok:
                 all_results = list(
@@ -1842,7 +1913,9 @@ class EvaluationService(CommonService):
                 )
 
             EvaluationRun.update(
-                judge_status="OK" if all_ok else "FAILED"
+                judge_status="OK" if all_ok else "FAILED",
+                judge_progress=1.0,
+                judge_progress_msg=f"{total}/{total}",
             ).where(EvaluationRun.id == run_id).execute()
         except Exception as e:
             logging.error("LLM judge execution failed for run %s: %s", run_id, e)
