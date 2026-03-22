@@ -1331,6 +1331,87 @@ class EvaluationService(CommonService):
         finally:
             root_logger.removeHandler(log_handler)
 
+    @classmethod
+    def rerun_judge_failed(
+        cls,
+        source_run_id: str,
+        user_id: str,
+        parallel: bool = True,
+        max_workers: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        try:
+            source_run = EvaluationRun.get_or_none(EvaluationRun.id == source_run_id)
+            if not source_run:
+                return False, "Source evaluation run not found"
+            if source_run.status in ("RUNNING", "PENDING"):
+                return False, "Source run is still in progress"
+
+            source_results = list(
+                EvaluationResult.select().where(EvaluationResult.run_id == source_run_id)
+            )
+            if not source_results:
+                return False, "Source run has no results"
+
+            hydrated = [cls._hydrate_result_with_status(r.to_dict()) for r in source_results]
+            rerun_case_ids = {
+                r["case_id"]
+                for r in hydrated
+                if isinstance(r.get("judge_result"), dict) and r["judge_result"].get("score") == 0
+            }
+            if not rerun_case_ids:
+                return False, "No judge-failed cases to rerun"
+
+            success, dialog = DialogService.get_by_id(source_run.dialog_id)
+            if not success:
+                return False, "Dialog not found for source run"
+
+            run_id = get_uuid()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            name = (source_run.name or "") + f" (judge-rerun {now})"
+
+            EvaluationRun.create(
+                id=run_id,
+                dataset_id=source_run.dataset_id,
+                dialog_id=source_run.dialog_id,
+                name=name,
+                config_snapshot=dialog.to_dict(),
+                metrics_summary=None,
+                progress=0.0,
+                status="RUNNING",
+                created_by=user_id,
+                create_time=current_timestamp(),
+                complete_time=None,
+            )
+
+            ok_results = [r for r in hydrated if r["case_id"] not in rerun_case_ids]
+            for r in ok_results:
+                EvaluationResult.create(
+                    id=get_uuid(),
+                    run_id=run_id,
+                    case_id=r["case_id"],
+                    generated_answer=r.get("generated_answer", ""),
+                    retrieved_chunks=r.get("retrieved_chunks", []),
+                    metrics=r.get("metrics", {}),
+                    execution_time=r.get("execution_time", 0.0),
+                    token_usage=r.get("token_usage"),
+                    telemetry=r.get("telemetry"),
+                    case_status=r.get("case_status", cls.CASE_STATUS_OK),
+                    judge_result=r.get("judge_result"),
+                    create_time=current_timestamp(),
+                )
+
+            threading.Thread(
+                target=cls._execute_rerun,
+                args=(run_id, source_run.dataset_id, dialog, rerun_case_ids, len(ok_results)),
+                kwargs={"parallel": parallel, "max_workers": max_workers},
+                daemon=True,
+            ).start()
+
+            return True, run_id
+        except Exception as e:
+            logging.error(f"Error rerunning judge-failed cases: {e}")
+            return False, str(e)
+
     # ==================== Results & Analysis ====================
 
     @classmethod
@@ -1877,10 +1958,8 @@ class EvaluationService(CommonService):
                     judge_result = cls._call_judge_llm(creds, model, system_prompt, user_message)
                 except Exception as e:
                     logging.error("LLM judge call failed for result %s: %s", result_dict.get("id"), e)
-                    err_str = str(e)
-                    is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower() or "rate limit" in err_str.lower()
                     judge_result = {
-                        "score": -1 if is_rate_limit else 0,
+                        "score": -1,
                         "explanation": f"Judge call failed: {e}",
                     }
                 EvaluationResult.update(judge_result=judge_result).where(

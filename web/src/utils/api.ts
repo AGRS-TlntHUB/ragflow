@@ -292,6 +292,8 @@ export default {
     `${api_host}/evaluation/run/${runId}/submit`,
   rerunFailedEvaluationRun: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/rerun_failed`,
+  rerunJudgeFailedEvaluationRun: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/rerun_judge_failed`,
   runEvaluationLlmJudge: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/judge`,
   cancelEvaluationLlmJudge: (runId: string) =>

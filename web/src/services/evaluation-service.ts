@@ -87,6 +87,11 @@ const methods = {
       api.rerunFailedEvaluationRun(config.runId),
     method: 'post',
   },
+  rerunJudgeFailedEvaluationRun: {
+    url: (config: { runId: string }) =>
+      api.rerunJudgeFailedEvaluationRun(config.runId),
+    method: 'post',
+  },
   runEvaluationLlmJudge: {
     url: (config: { runId: string }) => api.runEvaluationLlmJudge(config.runId),
     method: 'post',
