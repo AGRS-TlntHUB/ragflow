@@ -37,7 +37,6 @@ import subprocess
 import threading
 import traceback
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -66,8 +65,6 @@ class EvaluationService(CommonService):
     model = EvaluationDataset
     SINGLE_SHOT_CHAT_EVAL_TYPE = "Single-Shot Chat"
     SINGLE_SHOT_CHAT_SCRIPT_PATH = "ragflow/evals/single_shot_chat.py"
-    MAX_CONCURRENT_EVALUATIONS = 50
-    MAX_CONCURRENT_JUDGE_CALLS = 20
     CASE_STATUS_OK = "OK"
     CASE_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
     CASE_STATUS_FAILED = "FAILED"
@@ -341,7 +338,6 @@ class EvaluationService(CommonService):
         model_name_hint: Optional[str] = None,
         question: Optional[str] = None,
         generated_answer: Optional[str] = None,
-        is_parallel: bool = False,
     ) -> Dict[str, Any]:
         try:
             from rag.nlp import num_tokens_from_string
@@ -374,8 +370,6 @@ class EvaluationService(CommonService):
 
         if upstream_ttft:
             ttft_ms = upstream_ttft
-        elif is_parallel:
-            ttft_ms = None
         else:
             ttft_ms = execution_time_ms
 
@@ -411,8 +405,7 @@ class EvaluationService(CommonService):
             generation_ms = total_time_ms - ttft_ms
             if generation_ms > 0:
                 tpot_ms = int(generation_ms / (output_tokens - 1))
-        if not is_parallel:
-            tpot_ms = tpot_ms or 0
+        tpot_ms = tpot_ms or 0
 
         telemetry = {
             "timing": {
@@ -433,7 +426,7 @@ class EvaluationService(CommonService):
             or raw_answer.get("model_id")
             or (provided_telemetry.get("model_name") if isinstance(provided_telemetry, dict) else None)
             or model_name_hint,
-            "is_parallel": is_parallel,
+            "is_parallel": False,
         }
         return telemetry
 
@@ -762,8 +755,6 @@ class EvaluationService(CommonService):
         dialog_id: str,
         user_id: str,
         name: Optional[str] = None,
-        parallel: bool = True,
-        max_workers: Optional[int] = None,
     ) -> Tuple[bool, str]:
         try:
             success, dialog = DialogService.get_by_id(dialog_id)
@@ -794,7 +785,6 @@ class EvaluationService(CommonService):
             threading.Thread(
                 target=cls._execute_evaluation,
                 args=(run_id, dataset_id, dialog),
-                kwargs={"parallel": parallel, "max_workers": max_workers},
                 daemon=True,
             ).start()
 
@@ -809,12 +799,7 @@ class EvaluationService(CommonService):
         run_id: str,
         dataset_id: str,
         dialog: Any,
-        parallel: bool = True,
-        max_workers: Optional[int] = None,
     ):
-        effective_max_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_EVALUATIONS)
-        is_parallel = effective_max_workers > 1
-
         log_buf = io.StringIO()
         log_handler = logging.StreamHandler(log_buf)
         log_handler.setLevel(logging.DEBUG)
@@ -835,29 +820,19 @@ class EvaluationService(CommonService):
 
             total = len(test_cases)
             results = []
-            done = 0
-            progress_lock = threading.Lock()
             run_wall_start = timer()
-            with ThreadPoolExecutor(max_workers=effective_max_workers) as executor:
-                futures = {
-                    executor.submit(cls._evaluate_single_case, run_id, case, dialog, is_parallel): case
-                    for case in test_cases
-                }
-                for future in as_completed(futures):
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        case = futures[future]
-                        logging.error(f"Unhandled error evaluating case {case.get('id')}: {exc}")
-                        result = None
-                    if result:
-                        results.append(result)
-                    with progress_lock:
-                        done += 1
-                        EvaluationRun.update(
-                            progress=done / total,
-                            progress_msg=f"{done}/{total}",
-                        ).where(EvaluationRun.id == run_id).execute()
+            for idx, case in enumerate(test_cases, 1):
+                try:
+                    result = cls._evaluate_single_case(run_id, case, dialog)
+                except Exception as exc:
+                    logging.error(f"Unhandled error evaluating case {case.get('id')}: {exc}")
+                    result = None
+                if result:
+                    results.append(result)
+                EvaluationRun.update(
+                    progress=idx / total,
+                    progress_msg=f"{idx}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
             run_wall_seconds = timer() - run_wall_start
 
             metrics_summary = cls._compute_summary_metrics(results, run_wall_seconds=run_wall_seconds)
@@ -884,7 +859,7 @@ class EvaluationService(CommonService):
 
     @classmethod
     def _evaluate_single_case(cls, run_id: str, case: Dict[str, Any],
-                             dialog: Any, is_parallel: bool = False) -> Optional[Dict[str, Any]]:
+                             dialog: Any) -> Optional[Dict[str, Any]]:
         try:
             # Prepare messages
             messages = [{"role": "user", "content": case["question"]}]
@@ -951,7 +926,6 @@ class EvaluationService(CommonService):
                 model_name_hint=model_name_hint,
                 question=case["question"],
                 generated_answer=answer,
-                is_parallel=is_parallel,
             )
             case_status = cls._derive_case_status(telemetry=telemetry)
 
@@ -1182,8 +1156,6 @@ class EvaluationService(CommonService):
         cls,
         source_run_id: str,
         user_id: str,
-        parallel: bool = True,
-        max_workers: Optional[int] = None,
     ) -> Tuple[bool, str]:
         try:
             source_run = EvaluationRun.get_or_none(EvaluationRun.id == source_run_id)
@@ -1248,7 +1220,6 @@ class EvaluationService(CommonService):
             threading.Thread(
                 target=cls._execute_rerun,
                 args=(run_id, source_run.dataset_id, dialog, rerun_case_ids, len(ok_results)),
-                kwargs={"parallel": parallel, "max_workers": max_workers},
                 daemon=True,
             ).start()
 
@@ -1265,12 +1236,7 @@ class EvaluationService(CommonService):
         dialog: Any,
         rerun_case_ids: set,
         pre_copied_count: int,
-        parallel: bool = True,
-        max_workers: Optional[int] = None,
     ):
-        effective_max_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_EVALUATIONS)
-        is_parallel = effective_max_workers > 1
-
         log_buf = io.StringIO()
         log_handler = logging.StreamHandler(log_buf)
         log_handler.setLevel(logging.DEBUG)
@@ -1282,28 +1248,20 @@ class EvaluationService(CommonService):
             total = pre_copied_count + len(test_cases)
             results = []
             done = pre_copied_count
-            progress_lock = threading.Lock()
             run_wall_start = timer()
-            with ThreadPoolExecutor(max_workers=effective_max_workers) as executor:
-                futures = {
-                    executor.submit(cls._evaluate_single_case, run_id, case, dialog, is_parallel): case
-                    for case in test_cases
-                }
-                for future in as_completed(futures):
-                    try:
-                        result = future.result()
-                    except Exception as exc:
-                        case = futures[future]
-                        logging.error(f"Unhandled error re-evaluating case {case.get('id')}: {exc}")
-                        result = None
-                    if result:
-                        results.append(result)
-                    with progress_lock:
-                        done += 1
-                        EvaluationRun.update(
-                            progress=done / total,
-                            progress_msg=f"{done}/{total}",
-                        ).where(EvaluationRun.id == run_id).execute()
+            for case in test_cases:
+                try:
+                    result = cls._evaluate_single_case(run_id, case, dialog)
+                except Exception as exc:
+                    logging.error(f"Unhandled error re-evaluating case {case.get('id')}: {exc}")
+                    result = None
+                if result:
+                    results.append(result)
+                done += 1
+                EvaluationRun.update(
+                    progress=done / total,
+                    progress_msg=f"{done}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
             run_wall_seconds = timer() - run_wall_start
 
             all_result_rows = list(
@@ -1336,8 +1294,6 @@ class EvaluationService(CommonService):
         cls,
         source_run_id: str,
         user_id: str,
-        parallel: bool = True,
-        max_workers: Optional[int] = None,
     ) -> Tuple[bool, str]:
         try:
             source_run = EvaluationRun.get_or_none(EvaluationRun.id == source_run_id)
@@ -1403,7 +1359,6 @@ class EvaluationService(CommonService):
             threading.Thread(
                 target=cls._execute_rerun,
                 args=(run_id, source_run.dataset_id, dialog, rerun_case_ids, len(ok_results)),
-                kwargs={"parallel": parallel, "max_workers": max_workers},
                 daemon=True,
             ).start()
 
@@ -1833,8 +1788,6 @@ class EvaluationService(CommonService):
         prompt: str = "",
         only_errors: bool = False,
         only_failed: bool = False,
-        parallel: bool = False,
-        max_workers: Optional[int] = None,
     ) -> Tuple[bool, str]:
         model = (model or "").strip() or cls.DEFAULT_JUDGE_MODEL
         prompt = (prompt or "").strip() or cls.DEFAULT_JUDGE_PROMPT
@@ -1862,7 +1815,6 @@ class EvaluationService(CommonService):
         threading.Thread(
             target=cls._execute_llm_judge,
             args=(run_id, creds, model, prompt, only_errors, only_failed),
-            kwargs={"parallel": parallel, "max_workers": max_workers},
             daemon=True,
         ).start()
         return True, run_id
@@ -1893,8 +1845,6 @@ class EvaluationService(CommonService):
         system_prompt: str,
         only_errors: bool = False,
         only_failed: bool = False,
-        parallel: bool = False,
-        max_workers: Optional[int] = None,
     ):
         try:
             result_rows = list(
@@ -1921,11 +1871,8 @@ class EvaluationService(CommonService):
                     if isinstance(r.judge_result, dict) and r.judge_result.get("score") == 0
                 ]
 
-            effective_judge_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_JUDGE_CALLS)
-
             total = len(result_rows)
             done = 0
-            progress_lock = threading.Lock()
             all_ok = True
             cancelled = False
 
@@ -1934,9 +1881,10 @@ class EvaluationService(CommonService):
                 judge_progress_msg=f"0/{total}",
             ).where(EvaluationRun.id == run_id).execute()
 
-            def _judge_one(row):
+            for row in result_rows:
                 if cls._is_judge_cancelled(run_id):
-                    return None
+                    cancelled = True
+                    break
                 result_dict = row.to_dict()
                 case = case_map.get(result_dict.get("case_id"), {})
                 question = (
@@ -1965,32 +1913,13 @@ class EvaluationService(CommonService):
                 EvaluationResult.update(judge_result=judge_result).where(
                     EvaluationResult.id == result_dict["id"]
                 ).execute()
-                return judge_result
-
-            with ThreadPoolExecutor(max_workers=effective_judge_workers) as executor:
-                futures = {executor.submit(_judge_one, row): row for row in result_rows}
-                for future in as_completed(futures):
-                    if cls._is_judge_cancelled(run_id):
-                        cancelled = True
-                        for f in futures:
-                            f.cancel()
-                        break
-                    try:
-                        jr = future.result()
-                        if jr is None:
-                            cancelled = True
-                            break
-                        if jr.get("score") in (-1, 0) and "Judge call failed" in (jr.get("explanation") or ""):
-                            all_ok = False
-                    except Exception as exc:
-                        logging.error("Unhandled error in judge worker: %s", exc)
-                        all_ok = False
-                    with progress_lock:
-                        done += 1
-                        EvaluationRun.update(
-                            judge_progress=done / total,
-                            judge_progress_msg=f"{done}/{total}",
-                        ).where(EvaluationRun.id == run_id).execute()
+                if judge_result.get("score") in (-1, 0) and "Judge call failed" in (judge_result.get("explanation") or ""):
+                    all_ok = False
+                done += 1
+                EvaluationRun.update(
+                    judge_progress=done / total,
+                    judge_progress_msg=f"{done}/{total}",
+                ).where(EvaluationRun.id == run_id).execute()
 
             if cancelled:
                 EvaluationRun.update(

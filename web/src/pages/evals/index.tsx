@@ -643,9 +643,6 @@ export default function Evals() {
   const [resultFilter, setResultFilter] = useState<
     'all' | 'judge_failed' | 'judge_errors' | 'null_answer'
   >('all');
-  const [templateEvalSettings, setTemplateEvalSettings] = useState<
-    Record<string, { parallel: boolean; maxWorkers: number }>
-  >({});
   const filteredResults = useMemo(() => {
     if (resultFilter === 'judge_failed') {
       return results.filter(
@@ -830,10 +827,6 @@ export default function Evals() {
         throw new Error(importResponse.message || 'Failed to import cases');
       }
 
-      const settings = templateEvalSettings[templateId] ?? {
-        parallel: true,
-        maxWorkers: 50,
-      };
       const { data: startRunResponse } =
         await evaluationService.startEvaluationRun(
           {
@@ -841,8 +834,6 @@ export default function Evals() {
               dataset_id: datasetId,
               dialog_id: templateDialogId,
               name: `${template.eval_type} run ${timestamp} ${getTemplateRunTag(template.id)}`,
-              parallel: settings.parallel,
-              max_workers: settings.parallel ? settings.maxWorkers : undefined,
             },
             headers: { 'X-Skip-Error-Notification': '1' },
           },
@@ -1003,8 +994,6 @@ export default function Evals() {
   const [judgeDialogMode, setJudgeDialogMode] = useState<
     'judge' | 'rerun_errored'
   >('judge');
-  const [judgeParallel, setJudgeParallel] = useState(false);
-  const [judgeMaxWorkers, setJudgeMaxWorkers] = useState(2);
   const [judgeModel, setJudgeModel] = useState('gpt-4.1');
   const [judgePrompt, setJudgePrompt] = useState(
     'You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, ' +
@@ -1037,8 +1026,6 @@ export default function Evals() {
             model: judgeModel,
             prompt: judgePrompt,
             only_errors: mode === 'rerun_errored',
-            parallel: judgeParallel,
-            max_workers: judgeParallel ? judgeMaxWorkers : undefined,
           },
           headers: { 'X-Skip-Error-Notification': '1' },
         },
@@ -2056,79 +2043,6 @@ export default function Evals() {
                   readOnly
                 />
               </div>
-
-              <div className="pt-2 border-t border-border-default space-y-3">
-                <div className="text-sm font-medium">Run settings</div>
-                <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-                  <input
-                    type="checkbox"
-                    className="cursor-pointer"
-                    checked={
-                      (
-                        templateEvalSettings[settingsTemplateId] ?? {
-                          parallel: true,
-                          maxWorkers: 50,
-                        }
-                      ).parallel
-                    }
-                    onChange={(e) => {
-                      const prev = templateEvalSettings[settingsTemplateId] ?? {
-                        parallel: true,
-                        maxWorkers: 50,
-                      };
-                      setTemplateEvalSettings((s) => ({
-                        ...s,
-                        [settingsTemplateId]: {
-                          ...prev,
-                          parallel: e.target.checked,
-                        },
-                      }));
-                    }}
-                  />
-                  Parallel evaluation
-                </label>
-                <div className="space-y-1">
-                  <div className="text-sm text-text-secondary">
-                    Number of parallel evaluations
-                  </div>
-                  <input
-                    type="number"
-                    min={2}
-                    max={200}
-                    value={
-                      (
-                        templateEvalSettings[settingsTemplateId] ?? {
-                          parallel: true,
-                          maxWorkers: 50,
-                        }
-                      ).maxWorkers
-                    }
-                    disabled={
-                      !(
-                        templateEvalSettings[settingsTemplateId] ?? {
-                          parallel: true,
-                          maxWorkers: 50,
-                        }
-                      ).parallel
-                    }
-                    onChange={(e) => {
-                      const prev = templateEvalSettings[settingsTemplateId] ?? {
-                        parallel: true,
-                        maxWorkers: 50,
-                      };
-                      const val = Math.max(
-                        2,
-                        parseInt(e.target.value, 10) || 2,
-                      );
-                      setTemplateEvalSettings((s) => ({
-                        ...s,
-                        [settingsTemplateId]: { ...prev, maxWorkers: val },
-                      }));
-                    }}
-                    className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm disabled:opacity-50"
-                  />
-                </div>
-              </div>
             </div>
           )}
           <DialogFooter>
@@ -2404,35 +2318,6 @@ export default function Evals() {
                 rows={10}
                 className="w-full px-3 py-2 rounded-md border border-border-default bg-bg-base text-sm font-mono resize-y"
               />
-            </div>
-            <div className="pt-2 border-t border-border-default space-y-3">
-              <div className="text-sm font-medium">Parallelism</div>
-              <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  className="cursor-pointer"
-                  checked={judgeParallel}
-                  onChange={(e) => setJudgeParallel(e.target.checked)}
-                />
-                Parallel evaluation
-              </label>
-              <div className="space-y-1">
-                <div className="text-sm text-text-secondary">
-                  Number of parallel evaluations
-                </div>
-                <input
-                  type="number"
-                  min={2}
-                  max={200}
-                  value={judgeMaxWorkers}
-                  disabled={!judgeParallel}
-                  onChange={(e) => {
-                    const val = Math.max(2, parseInt(e.target.value, 10) || 2);
-                    setJudgeMaxWorkers(val);
-                  }}
-                  className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm disabled:opacity-50"
-                />
-              </div>
             </div>
             <div className="text-xs text-text-secondary">
               The judge will evaluate each question/answer pair against
