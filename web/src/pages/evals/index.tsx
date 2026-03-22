@@ -29,6 +29,7 @@ import {
   LucideSend,
   LucideSettings,
   LucideTrash2,
+  LucideX,
 } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -45,6 +46,8 @@ type EvaluationRun = {
   create_time: number;
   complete_time?: number;
   judge_status?: string | null;
+  judge_progress?: number;
+  judge_progress_msg?: string;
   metrics_summary?: {
     total_cases?: number;
     ok_cases?: number;
@@ -572,7 +575,10 @@ export default function Evals() {
     refetchInterval: (query) => {
       const data = query.state.data as { run: EvaluationRun } | undefined;
       const js = (data?.run?.judge_status || '').toUpperCase();
-      return js === 'RUNNING' ? 2000 : false;
+      const rs = (data?.run?.status || '').toUpperCase();
+      return js === 'RUNNING' || rs === 'RUNNING' || rs === 'PENDING'
+        ? 2000
+        : false;
     },
   });
 
@@ -606,6 +612,15 @@ export default function Evals() {
   const results = selectedRun ? runDetailData?.results || [] : [];
   const effectiveJudgeStatus =
     runDetailData?.run?.judge_status ?? selectedRun?.judge_status ?? null;
+  const isJudgeRunning =
+    (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING';
+  const judgeProgress =
+    runDetailData?.run?.judge_progress ?? selectedRun?.judge_progress ?? 0;
+  const judgeProgressMsg =
+    runDetailData?.run?.judge_progress_msg ??
+    selectedRun?.judge_progress_msg ??
+    '';
+  const judgeProgressPct = Math.round((judgeProgress || 0) * 100);
   const runStatusMeta = getRunStatusMeta(selectedRun?.status || '');
   const canDownloadArtifacts = !['RUNNING', 'PENDING'].includes(
     normalizeStatus(selectedRun?.status || ''),
@@ -1005,6 +1020,28 @@ export default function Evals() {
     }
   };
 
+  const handleCancelJudge = async () => {
+    if (!selectedRun?.id) return;
+    try {
+      const { data: response } =
+        await evaluationService.cancelEvaluationLlmJudge(
+          {
+            runId: selectedRun.id,
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to cancel LLM judge');
+      }
+      await refetchRuns();
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : 'Failed to cancel LLM judge',
+      );
+    }
+  };
+
   const hasFailedOrMissing = useMemo(() => {
     if (!selectedRun || !canDownloadArtifacts) return false;
     return results.some(
@@ -1024,6 +1061,37 @@ export default function Evals() {
     if (!selectedRun || !canDownloadArtifacts) return false;
     return results.some((r) => isJudgeError(r.judge_result));
   }, [selectedRun, canDownloadArtifacts, results]);
+
+  const [rerunJudgeFailedLoading, setRerunJudgeFailedLoading] = useState(false);
+  const handleRerunJudgeFailed = async () => {
+    if (!selectedRun?.id) return;
+    setRerunJudgeFailedLoading(true);
+    try {
+      const { data: response } = await evaluationService.runEvaluationLlmJudge(
+        {
+          runId: selectedRun.id,
+          data: { model: judgeModel, prompt: judgePrompt, only_failed: true },
+          headers: { 'X-Skip-Error-Notification': '1' },
+        },
+        true,
+      );
+      if (response.code !== 0) {
+        throw new Error(
+          response.message || 'Failed to rerun failed LLM judge cases',
+        );
+      }
+      message.success('Re-running failed LLM judge cases');
+      await refetchRuns();
+    } catch (error) {
+      message.error(
+        error instanceof Error
+          ? error.message
+          : 'Failed to rerun failed LLM judge cases',
+      );
+    } finally {
+      setRerunJudgeFailedLoading(false);
+    }
+  };
 
   const [rerunJudgeErroredLoading, setRerunJudgeErroredLoading] =
     useState(false);
@@ -1454,6 +1522,25 @@ export default function Evals() {
                         : 'Re-run errored LLM judge'}
                     </button>
                   )}
+                  {hasJudgeFailed && (
+                    <button
+                      type="button"
+                      onClick={() => void handleRerunJudgeFailed()}
+                      disabled={
+                        rerunJudgeFailedLoading ||
+                        judgeRunning ||
+                        (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
+                      }
+                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
+                    >
+                      <LucideRefreshCw
+                        className={`size-3.5 ${rerunJudgeFailedLoading ? 'animate-spin' : ''}`}
+                      />
+                      {rerunJudgeFailedLoading
+                        ? 'Re-running...'
+                        : 'Re-run failed LLM judge'}
+                    </button>
+                  )}
                 </div>
                 <div className="text-text-secondary">Submission</div>
                 <div className="flex items-center gap-2 flex-wrap">
@@ -1471,23 +1558,44 @@ export default function Evals() {
                   >
                     Submit
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setJudgeDialogOpen(true)}
-                    disabled={
-                      !selectedRun?.id ||
-                      !canDownloadArtifacts ||
-                      judgeRunning ||
-                      (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
-                    }
-                    className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50 inline-flex items-center gap-1"
-                  >
-                    <LucideScale className="size-3.5" />
-                    {judgeRunning ||
-                    (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
-                      ? 'Judging...'
-                      : 'LLM Judge'}
-                  </button>
+                  {isJudgeRunning ? (
+                    <div className="inline-flex items-center gap-2 h-8 px-2 rounded-md border border-border-default text-xs">
+                      <LucideScale className="size-3.5 animate-pulse" />
+                      <span className="text-text-secondary whitespace-nowrap tabular-nums">
+                        {judgeProgressMsg || `${judgeProgressPct}%`}
+                      </span>
+                      <div className="w-24 h-1.5 rounded-full bg-fill-tertiary overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-accent-primary transition-all duration-500"
+                          style={{
+                            width: `${Math.max(4, judgeProgressPct)}%`,
+                          }}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void handleCancelJudge()}
+                        className="size-5 inline-flex items-center justify-center rounded hover:bg-fill-secondary"
+                        title="Cancel judge"
+                      >
+                        <LucideX className="size-3.5" />
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => setJudgeDialogOpen(true)}
+                      disabled={
+                        !selectedRun?.id ||
+                        !canDownloadArtifacts ||
+                        judgeRunning
+                      }
+                      className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50 inline-flex items-center gap-1"
+                    >
+                      <LucideScale className="size-3.5" />
+                      LLM Judge
+                    </button>
+                  )}
                 </div>
               </div>
             </header>
