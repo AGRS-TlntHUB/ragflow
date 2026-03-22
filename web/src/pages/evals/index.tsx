@@ -121,9 +121,10 @@ const formatDatasetPathForCard = (datasetPath: string) => {
   if (!datasetPath) {
     return '-';
   }
-  const normalized = datasetPath.replace(/\\/g, '/');
-  const fileName = normalized.split('/').filter(Boolean).pop() || normalized;
-  return `.../${fileName}`;
+  const parts = datasetPath.replace(/\\/g, '/').split('/').filter(Boolean);
+  const tail =
+    parts.length >= 2 ? parts.slice(-2).join('/') : parts[0] || datasetPath;
+  return `../${tail}`;
 };
 
 const formatQuestionWithAnswerType = (
@@ -339,6 +340,7 @@ export default function Evals() {
   const [settingsTemplateId, setSettingsTemplateId] = useState<string>('');
   const [runningTemplateId, setRunningTemplateId] = useState('');
   const [pendingRunTemplateId, setPendingRunTemplateId] = useState('');
+  const [pendingDeleteTemplateId, setPendingDeleteTemplateId] = useState('');
   const [isAddTemplateOpen, setIsAddTemplateOpen] = useState(false);
   const [newTemplateEvalType, setNewTemplateEvalType] = useState('');
   const [newTemplateDatasetPath, setNewTemplateDatasetPath] = useState('');
@@ -1199,7 +1201,7 @@ export default function Evals() {
                       type="button"
                       aria-label="Delete template"
                       onClick={() => {
-                        void handleDeleteTemplate(template.id);
+                        setPendingDeleteTemplateId(template.id);
                       }}
                       className="size-7 inline-flex items-center justify-center rounded-md hover:bg-fill-secondary"
                     >
@@ -1948,6 +1950,37 @@ export default function Evals() {
               }}
             >
               Yes
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={!!pendingDeleteTemplateId}
+        onOpenChange={(open) => !open && setPendingDeleteTemplateId('')}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete template?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the eval template. This action cannot
+              be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setPendingDeleteTemplateId('')}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                const templateId = pendingDeleteTemplateId;
+                setPendingDeleteTemplateId('');
+                if (templateId) {
+                  void handleDeleteTemplate(templateId);
+                }
+              }}
+            >
+              Delete
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
