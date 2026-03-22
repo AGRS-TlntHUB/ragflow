@@ -536,6 +536,86 @@ async def rerun_failed(run_id):
         return server_error_response(e)
 
 
+@manager.route('/run/<run_id>/prepare_artifacts', methods=['POST'])  # noqa: F821
+@login_required
+async def prepare_artifacts(run_id):
+    """Build submission.json and code_archive.zip without uploading."""
+    try:
+        success, result = EvaluationService.prepare_submission_artifacts(run_id)
+        if not success:
+            return get_json_result(
+                code=RetCode.DATA_ERROR,
+                message=result.get("message", "Failed to prepare artifacts"),
+                data=result,
+            )
+        return get_json_result(data=result)
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/run/<run_id>/submit', methods=['POST'])  # noqa: F821
+@login_required
+async def submit_run(run_id):
+    """Upload pre-built artifacts to the challenge platform."""
+    try:
+        success, result = EvaluationService.submit_run_to_platform(run_id)
+        if not success:
+            return get_json_result(
+                code=RetCode.DATA_ERROR,
+                message=result.get("message", "Failed to submit run"),
+                data=result,
+            )
+        return get_json_result(data=result)
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/submission_api_key', methods=['GET'])  # noqa: F821
+@login_required
+async def get_submission_api_key_status():
+    try:
+        return get_json_result(
+            data={"has_api_key": EvaluationService.has_submission_api_key()}
+        )
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/submission_api_key', methods=['POST'])  # noqa: F821
+@login_required
+@validate_request("api_key")
+async def set_submission_api_key():
+    try:
+        req = await get_request_json()
+        success, msg = EvaluationService.set_submission_api_key(req.get("api_key", ""))
+        if not success:
+            return get_data_error_result(message=msg)
+        return get_json_result(data={"has_api_key": True})
+    except Exception as e:
+        return server_error_response(e)
+
+
+@manager.route('/run/<run_id>/judge', methods=['POST'])  # noqa: F821
+@login_required
+async def run_llm_judge(run_id):
+    """Run LLM-as-a-judge on a completed evaluation run."""
+    try:
+        req = await get_request_json()
+        model = req.get("model", "")
+        prompt = req.get("prompt", "")
+        success, result = EvaluationService.run_llm_judge(
+            run_id=run_id,
+            tenant_id=current_user.id,
+            model=model,
+            prompt=prompt,
+        )
+        if not success:
+            return get_data_error_result(message=result)
+        return get_json_result(data={"run_id": result})
+    except Exception as e:
+        return server_error_response(e)
+
+
 @manager.route('/run/<run_id>', methods=['DELETE'])  # noqa: F821
 @login_required
 async def delete_evaluation_run(run_id):

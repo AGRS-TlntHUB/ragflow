@@ -24,7 +24,7 @@ import {
 import { formatDate } from '@/utils/date';
 import { useQueryClient } from '@tanstack/react-query';
 import { ColumnDef } from '@tanstack/table-core';
-import { ArrowUpDown, CircleX, RotateCcw, Trash2 } from 'lucide-react';
+import { ArrowUpDown, CircleX, Play, RotateCcw, Trash2 } from 'lucide-react';
 import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useParams } from 'react-router';
@@ -78,6 +78,14 @@ export function useDatasetTableColumns({
     .filter(
       (doc) =>
         doc.run !== RunningStatus.RUNNING && doc.run !== RunningStatus.SCHEDULE,
+    )
+    .map((doc) => doc.id);
+  const emptyMetadataDocumentIds = runnableDocuments
+    .filter(
+      (doc) =>
+        doc.run !== RunningStatus.RUNNING &&
+        doc.run !== RunningStatus.SCHEDULE &&
+        (!doc.meta_fields || Object.keys(doc.meta_fields).length === 0),
     )
     .map((doc) => doc.id);
   const allDocumentIds = documents.map((doc) => doc.id);
@@ -383,6 +391,24 @@ export function useDatasetTableColumns({
               </Button>
             </TooltipTrigger>
             <TooltipContent>{t('run')}</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                disabled={emptyMetadataDocumentIds.length === 0}
+                onClick={() =>
+                  runDocumentByIds({
+                    documentIds: emptyMetadataDocumentIds,
+                    run: 1,
+                  })
+                }
+              >
+                <Play className="text-accent-primary" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>{t('runNoMetadata')}</TooltipContent>
           </Tooltip>
           <Tooltip>
             <TooltipTrigger asChild>

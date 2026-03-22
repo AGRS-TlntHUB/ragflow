@@ -26,17 +26,23 @@ Provides functionality for evaluating RAG system performance including:
 """
 
 import asyncio
+import fnmatch
 import io
 import json
 import logging
+import os
 import queue
+import re
+import subprocess
 import threading
 import traceback
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
 from timeit import default_timer as timer
+import requests
 
 from api.db.db_models import (
     EvaluationDataset,
@@ -45,6 +51,7 @@ from api.db.db_models import (
     EvaluationResult,
     EvaluationTemplate,
     EvaluationTypeScript,
+    SystemSettings,
 )
 from api.db.services.common_service import CommonService
 from api.db.services.dialog_service import DialogService
@@ -59,12 +66,60 @@ class EvaluationService(CommonService):
     model = EvaluationDataset
     SINGLE_SHOT_CHAT_EVAL_TYPE = "Single-Shot Chat"
     SINGLE_SHOT_CHAT_SCRIPT_PATH = "ragflow/evals/single_shot_chat.py"
+    MAX_CONCURRENT_EVALUATIONS = 50
     CASE_STATUS_OK = "OK"
     CASE_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
     CASE_STATUS_FAILED = "FAILED"
     RUN_STATUS_MISSING_TELEMETRY = "MISSING_TELEMETRY"
+    SUBMISSION_API_KEY_SETTING_NAME = "evaluation.submission_api_key"
     ARTIFACTS_DIR = Path("/tmp/ragflow_eval_artifacts")
     REPO_ROOT = Path(__file__).resolve().parents[3]
+
+    @classmethod
+    def has_submission_api_key(cls) -> bool:
+        record = SystemSettings.get_or_none(
+            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
+        )
+        if not record:
+            return False
+        return bool((record.value or "").strip())
+
+    @classmethod
+    def set_submission_api_key(cls, api_key: str) -> Tuple[bool, str]:
+        value = (api_key or "").strip()
+        if not value:
+            return False, "API key cannot be empty"
+        now = current_timestamp()
+        payload = {
+            "source": "variable",
+            "data_type": "string",
+            "value": value,
+            "update_time": now,
+        }
+        existing = SystemSettings.get_or_none(
+            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
+        )
+        if existing:
+            SystemSettings.update(payload).where(
+                SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
+            ).execute()
+            return True, "ok"
+
+        SystemSettings.create(
+            name=cls.SUBMISSION_API_KEY_SETTING_NAME,
+            create_time=now,
+            **payload,
+        )
+        return True, "ok"
+
+    @classmethod
+    def _get_submission_api_key(cls) -> str:
+        record = SystemSettings.get_or_none(
+            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
+        )
+        if not record:
+            return ""
+        return (record.value or "").strip()
 
     @classmethod
     def _ensure_eval_type_script_mapping(cls, tenant_id: str, user_id: str) -> None:
@@ -487,7 +542,7 @@ class EvaluationService(CommonService):
         cls.ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
         return (
             cls.ARTIFACTS_DIR / f"submission_{run_id}.json",
-            cls.ARTIFACTS_DIR / f"code_archive_{run_id}.zip",
+            cls.ARTIFACTS_DIR / "code_archive.zip",
         )
 
     # ==================== Dataset Management ====================
@@ -785,15 +840,28 @@ class EvaluationService(CommonService):
 
             total = len(test_cases)
             results = []
-            for idx, case in enumerate(test_cases):
-                result = cls._evaluate_single_case(run_id, case, dialog)
-                if result:
-                    results.append(result)
-                done = idx + 1
-                EvaluationRun.update(
-                    progress=done / total,
-                    progress_msg=f"{done}/{total}",
-                ).where(EvaluationRun.id == run_id).execute()
+            done = 0
+            progress_lock = threading.Lock()
+            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
+                futures = {
+                    executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
+                    for case in test_cases
+                }
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        case = futures[future]
+                        logging.error(f"Unhandled error evaluating case {case.get('id')}: {exc}")
+                        result = None
+                    if result:
+                        results.append(result)
+                    with progress_lock:
+                        done += 1
+                        EvaluationRun.update(
+                            progress=done / total,
+                            progress_msg=f"{done}/{total}",
+                        ).where(EvaluationRun.id == run_id).execute()
 
             metrics_summary = cls._compute_summary_metrics(results)
             run_status = cls._derive_run_status(results)
@@ -1179,15 +1247,28 @@ class EvaluationService(CommonService):
             test_cases = [c for c in cls.get_test_cases(dataset_id) if c["id"] in rerun_case_ids]
             total = pre_copied_count + len(test_cases)
             results = []
-            for idx, case in enumerate(test_cases):
-                result = cls._evaluate_single_case(run_id, case, dialog)
-                if result:
-                    results.append(result)
-                done = pre_copied_count + idx + 1
-                EvaluationRun.update(
-                    progress=done / total,
-                    progress_msg=f"{done}/{total}",
-                ).where(EvaluationRun.id == run_id).execute()
+            done = pre_copied_count
+            progress_lock = threading.Lock()
+            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
+                futures = {
+                    executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
+                    for case in test_cases
+                }
+                for future in as_completed(futures):
+                    try:
+                        result = future.result()
+                    except Exception as exc:
+                        case = futures[future]
+                        logging.error(f"Unhandled error re-evaluating case {case.get('id')}: {exc}")
+                        result = None
+                    if result:
+                        results.append(result)
+                    with progress_lock:
+                        done += 1
+                        EvaluationRun.update(
+                            progress=done / total,
+                            progress_msg=f"{done}/{total}",
+                        ).where(EvaluationRun.id == run_id).execute()
 
             all_result_rows = list(
                 EvaluationResult.select().where(EvaluationResult.run_id == run_id)
@@ -1295,6 +1376,53 @@ class EvaluationService(CommonService):
             logging.error(f"Error getting run results {run_id}: {e}")
             return {}
 
+    _CITATION_RE = re.compile(r"\s*\[ID:\d+\]")
+    _FREE_TEXT_MAX_LEN = 280
+
+    @classmethod
+    def _strip_citation_markers(cls, text: str) -> str:
+        return cls._CITATION_RE.sub("", text).strip()
+
+    @classmethod
+    def _coerce_answer(cls, raw: Any, answer_type: Optional[str]) -> Any:
+        if raw is None or (isinstance(raw, str) and raw.strip().lower() == "null"):
+            return None
+        if not isinstance(raw, str):
+            return raw
+        cleaned = cls._strip_citation_markers(raw)
+        if answer_type == "boolean":
+            low = cleaned.strip().lower()
+            if low == "true":
+                return True
+            if low == "false":
+                return False
+            return cleaned
+        if answer_type == "number":
+            stripped = cleaned.strip()
+            try:
+                return int(stripped)
+            except ValueError:
+                pass
+            try:
+                return float(stripped)
+            except ValueError:
+                return cleaned
+        if answer_type == "names":
+            stripped = cleaned.strip()
+            if stripped.startswith("["):
+                try:
+                    parsed = json.loads(stripped)
+                    if isinstance(parsed, list):
+                        return [str(x) for x in parsed]
+                except (json.JSONDecodeError, ValueError):
+                    pass
+            return [s.strip() for s in stripped.split(",") if s.strip()]
+        if answer_type == "free_text":
+            if len(cleaned) > cls._FREE_TEXT_MAX_LEN:
+                cleaned = cleaned[: cls._FREE_TEXT_MAX_LEN]
+            return cleaned
+        return cls._strip_citation_markers(raw)
+
     @classmethod
     def build_submission_artifact(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
         run_result = cls.get_run_results(run_id)
@@ -1313,10 +1441,12 @@ class EvaluationService(CommonService):
             case = case_map.get(result.get("case_id"), {})
             metadata = case.get("metadata") or {}
             question_id = metadata.get("source_id") or result.get("case_id")
+            answer_type = metadata.get("answer_type")
+            raw_answer = result.get("generated_answer")
             answers.append(
                 {
                     "question_id": question_id,
-                    "answer": result.get("generated_answer"),
+                    "answer": cls._coerce_answer(raw_answer, answer_type),
                     "telemetry": result.get("telemetry"),
                 }
             )
@@ -1325,6 +1455,14 @@ class EvaluationService(CommonService):
             "architecture_summary": f"Generated from RAGFlow evaluation run {run_id}",
             "answers": answers,
         }
+
+        try:
+            EvaluationRun.update(submission_payload=payload).where(
+                EvaluationRun.id == run_id
+            ).execute()
+        except Exception:
+            logging.exception("Failed to persist submission_payload for run %s", run_id)
+
         submission_path, _ = cls._artifact_paths(run_id)
         submission_path.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2),
@@ -1332,17 +1470,73 @@ class EvaluationService(CommonService):
         )
         return True, {"path": str(submission_path), "filename": submission_path.name}
 
+    ARCHIVE_EXCLUDE_PATTERNS = [
+        "*.svg", "*.png", "*.jpg", "*.jpeg", "*.gif", "*.ico", "*.webp",
+        "*.woff", "*.woff2", "*.ttf", "*.eot",
+        "*.csv", "*.log", "*.log.*",
+        "*.tgz", "*.tar.gz", "*.deb", "*.jar", "*.jar.*",
+        "*.trie", "*.pdb", "*.tiktoken",
+        "*.onnx", "*.model", "*.bin", "*.weights", "*.pt", "*.pth",
+        "uv.lock", "web/package-lock.json",
+        "web/public/pdfjs-dist/*",
+        "web/src/stories/*",
+        "rag/res/*",
+        "docs/*",
+        "test/*",
+        "internal/*",
+        "logs/*",
+    ]
+
+    ARCHIVE_SKIP_DIRS = {
+        ".git", "__pycache__", "node_modules", ".venv", "venv",
+        ".idea", ".vscode", ".trae", ".lh",
+        ".run", ".pytest_cache", ".hypothesis",
+        "data", "data_saved",
+        "dist", "build", "coverage", ".next", ".nuxt", ".cache",
+        "ragflow.egg-info", "ragflow_cli.egg-info",
+        "ragflow-logs", "flask_session",
+        "huggingface.co", "nltk_data",
+        "res",
+    }
+
     @classmethod
     def build_code_archive_artifact(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
         _, code_archive_path = cls._artifact_paths(run_id)
+        file_list = cls._collect_archivable_files()
         with zipfile.ZipFile(code_archive_path, "w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-            for file_path in sorted(cls.REPO_ROOT.rglob("*")):
-                if not file_path.is_file():
-                    continue
-                if ".git" in file_path.parts or "__pycache__" in file_path.parts:
-                    continue
-                zip_file.write(file_path, arcname=file_path.relative_to(cls.REPO_ROOT))
+            for rel in file_list:
+                file_path = cls.REPO_ROOT / rel
+                if file_path.is_file():
+                    zip_file.write(file_path, arcname=rel)
         return True, {"path": str(code_archive_path), "filename": code_archive_path.name}
+
+    @classmethod
+    def _is_archive_excluded(cls, rel_path: str) -> bool:
+        basename = rel_path.rsplit("/", 1)[-1]
+        for pat in cls.ARCHIVE_EXCLUDE_PATTERNS:
+            if fnmatch.fnmatch(rel_path, pat) or fnmatch.fnmatch(basename, pat):
+                return True
+        return False
+
+    @classmethod
+    def _collect_archivable_files(cls) -> List[str]:
+        try:
+            result = subprocess.run(
+                ["git", "ls-files", "-z"],
+                cwd=str(cls.REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            result.check_returncode()
+            candidates = sorted(f for f in result.stdout.split("\0") if f)
+        except Exception:
+            candidates = sorted(
+                str(p.relative_to(cls.REPO_ROOT))
+                for p in cls.REPO_ROOT.rglob("*")
+                if p.is_file() and cls.ARCHIVE_SKIP_DIRS.isdisjoint(p.relative_to(cls.REPO_ROOT).parts)
+            )
+        return [f for f in candidates if not cls._is_archive_excluded(f)]
 
     @classmethod
     def get_run_artifact(cls, run_id: str, artifact_type: str) -> Tuple[bool, Dict[str, Any]]:
@@ -1363,6 +1557,282 @@ class EvaluationService(CommonService):
             return True, {**payload, "mimetype": "application/zip"}
 
         return False, {"message": f"Unsupported artifact type: {artifact_type}"}
+
+    @classmethod
+    def prepare_submission_artifacts(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
+        success, submission_payload = cls.build_submission_artifact(run_id)
+        if not success:
+            return False, submission_payload
+        success, archive_payload = cls.build_code_archive_artifact(run_id)
+        if not success:
+            return False, archive_payload
+        return True, {
+            "submission": submission_payload,
+            "code_archive": archive_payload,
+        }
+
+    @classmethod
+    def submit_run_to_platform(cls, run_id: str) -> Tuple[bool, Dict[str, Any]]:
+        eval_api_key = cls._get_submission_api_key()
+        if not eval_api_key:
+            return False, {"message": "Submission API key is not configured"}
+
+        eval_base_url = os.getenv(
+            "EVAL_BASE_URL",
+            "https://platform.agentic-challenge.ai/api/v1",
+        ).strip().rstrip("/")
+        submit_url = f"{eval_base_url}/submissions"
+
+        submission_path, archive_path = cls._artifact_paths(run_id)
+        if not submission_path.exists() or not archive_path.exists():
+            success, payload = cls.prepare_submission_artifacts(run_id)
+            if not success:
+                return False, payload
+
+        artifact_sizes = {
+            "submission_size": submission_path.stat().st_size if submission_path.exists() else 0,
+            "code_archive_size": archive_path.stat().st_size if archive_path.exists() else 0,
+        }
+
+        headers = {"X-API-Key": eval_api_key}
+        try:
+            with open(str(submission_path), "rb") as submission_file, open(
+                str(archive_path), "rb"
+            ) as archive_file:
+                response = requests.post(
+                    submit_url,
+                    headers=headers,
+                    files={
+                        "file": (
+                            submission_path.name,
+                            submission_file,
+                            "application/json",
+                        ),
+                        "code_archive": (
+                            archive_path.name,
+                            archive_file,
+                            "application/zip",
+                        ),
+                    },
+                    timeout=180,
+                )
+        except Exception as e:
+            logging.exception("Failed to submit evaluation run %s", run_id)
+            return False, {"message": f"Failed to submit to platform: {e}", **artifact_sizes}
+
+        try:
+            response_payload = response.json()
+        except Exception:
+            response_payload = {"raw_response": response.text}
+
+        if response.status_code >= 400:
+            logging.warning(
+                "Submission API %s for run %s: %s",
+                response.status_code, run_id, response_payload,
+            )
+            detail_str = json.dumps(response_payload, ensure_ascii=False)
+            return False, {
+                "message": f"Submission API returned {response.status_code}: {detail_str}",
+                "status_code": response.status_code,
+                "response": response_payload,
+                **artifact_sizes,
+            }
+
+        EvaluationRun.update(is_submitted=True).where(EvaluationRun.id == run_id).execute()
+
+        return True, {
+            "status_code": response.status_code,
+            "response": response_payload,
+            **artifact_sizes,
+        }
+
+    # ==================== LLM Judge ====================
+
+    DEFAULT_JUDGE_MODEL = "gpt-4.1"
+    DEFAULT_JUDGE_PROMPT = (
+        "You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, "
+        "and the RETRIEVED CHUNKS that were provided to the system as context.\n\n"
+        "Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n"
+        "- score=1 (true) means the answer is factually correct given the chunks and addresses the question.\n"
+        "- score=0 (false) means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n\n"
+        "Return ONLY valid JSON (no markdown fences) with this schema for EACH request:\n"
+        '{"score": 1, "explanation": ""}\n'
+        "or\n"
+        '{"score": 0, "explanation": "<non-empty reason why the answer failed>"}\n\n'
+        "Rules:\n"
+        "- explanation MUST be empty string when score=1.\n"
+        "- explanation MUST be non-empty when score=0.\n"
+        "- Do NOT output anything other than the JSON object."
+    )
+
+    @classmethod
+    def _resolve_judge_credentials(cls, tenant_id: str, model: str) -> Dict[str, Any]:
+        from api.db.services.tenant_llm_service import TenantLLMService
+
+        model_config = TenantLLMService.get_api_key(tenant_id, model)
+        if model_config:
+            return {
+                "api_key": model_config.api_key or "",
+                "api_base": model_config.api_base or None,
+                "model_name": model_config.llm_name or model,
+            }
+
+        mdlnm, _ = TenantLLMService.split_model_name_and_factory(model)
+        model_config = TenantLLMService.get_api_key(tenant_id, mdlnm)
+        if model_config:
+            return {
+                "api_key": model_config.api_key or "",
+                "api_base": model_config.api_base or None,
+                "model_name": model_config.llm_name or mdlnm,
+            }
+
+        from api.db.db_models import TenantLLM
+        any_openai = (
+            TenantLLM.select()
+            .where(
+                (TenantLLM.tenant_id == tenant_id)
+                & (TenantLLM.llm_factory == "OpenAI")
+                & (~TenantLLM.api_key.is_null())
+            )
+            .first()
+        )
+        if any_openai:
+            return {
+                "api_key": any_openai.api_key or "",
+                "api_base": any_openai.api_base or None,
+                "model_name": mdlnm,
+            }
+
+        api_key = os.getenv("OPENAI_API_KEY", "")
+        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE") or None
+        return {"api_key": api_key, "api_base": api_base, "model_name": mdlnm}
+
+    @classmethod
+    def run_llm_judge(
+        cls,
+        run_id: str,
+        tenant_id: str = "",
+        model: str = "",
+        prompt: str = "",
+    ) -> Tuple[bool, str]:
+        model = (model or "").strip() or cls.DEFAULT_JUDGE_MODEL
+        prompt = (prompt or "").strip() or cls.DEFAULT_JUDGE_PROMPT
+
+        run = EvaluationRun.get_or_none(EvaluationRun.id == run_id)
+        if not run:
+            return False, "Evaluation run not found"
+        if run.status in ("RUNNING", "PENDING"):
+            return False, "Evaluation run is still in progress"
+
+        tid = tenant_id or run.created_by
+        creds = cls._resolve_judge_credentials(tid, model)
+        if not creds.get("api_key"):
+            return False, (
+                f"No API key found for model '{model}'. "
+                "Configure the model in RAGFlow's Model Providers settings."
+            )
+
+        EvaluationRun.update(judge_status="RUNNING").where(EvaluationRun.id == run_id).execute()
+
+        threading.Thread(
+            target=cls._execute_llm_judge,
+            args=(run_id, creds, model, prompt),
+            daemon=True,
+        ).start()
+        return True, run_id
+
+    @classmethod
+    def _execute_llm_judge(cls, run_id: str, creds: Dict[str, Any], model: str, system_prompt: str):
+        try:
+            result_rows = list(
+                EvaluationResult.select().where(EvaluationResult.run_id == run_id)
+            )
+            if not result_rows:
+                EvaluationRun.update(judge_status="FAILED").where(EvaluationRun.id == run_id).execute()
+                return
+
+            run = EvaluationRun.get_or_none(EvaluationRun.id == run_id)
+            dataset_id = run.dataset_id if run else None
+            case_map = {}
+            if dataset_id:
+                case_map = {c["id"]: c for c in cls.get_test_cases(dataset_id)}
+
+            all_ok = True
+            for row in result_rows:
+                result_dict = row.to_dict()
+                case = case_map.get(result_dict.get("case_id"), {})
+                question = (
+                    (case.get("metadata") or {}).get("source_question")
+                    or case.get("question")
+                    or ""
+                )
+                answer = result_dict.get("generated_answer", "")
+                chunks = result_dict.get("retrieved_chunks") or []
+                chunks_text = "\n---\n".join(
+                    cls._chunk_to_text(c) for c in chunks if isinstance(c, dict)
+                )
+
+                user_message = (
+                    f"QUESTION:\n{question}\n\n"
+                    f"ANSWER:\n{answer}\n\n"
+                    f"RETRIEVED CHUNKS:\n{chunks_text}"
+                )
+
+                try:
+                    judge_result = cls._call_judge_llm(creds, model, system_prompt, user_message)
+                except Exception as e:
+                    logging.error("LLM judge call failed for result %s: %s", result_dict.get("id"), e)
+                    judge_result = {"score": 0, "explanation": f"Judge call failed: {e}"}
+                    all_ok = False
+
+                EvaluationResult.update(judge_result=judge_result).where(
+                    EvaluationResult.id == result_dict["id"]
+                ).execute()
+
+            EvaluationRun.update(
+                judge_status="OK" if all_ok else "FAILED"
+            ).where(EvaluationRun.id == run_id).execute()
+        except Exception as e:
+            logging.error("LLM judge execution failed for run %s: %s", run_id, e)
+            EvaluationRun.update(judge_status="FAILED").where(EvaluationRun.id == run_id).execute()
+
+    @classmethod
+    def _chunk_to_text(cls, chunk: Dict[str, Any]) -> str:
+        for key in ("content", "content_with_weight", "chunk_content", "text", "body"):
+            val = chunk.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+        return json.dumps(chunk, ensure_ascii=False)
+
+    @classmethod
+    def _call_judge_llm(cls, creds: Dict[str, Any], model: str, system_prompt: str, user_message: str) -> Dict[str, Any]:
+        import openai
+
+        client_kwargs: Dict[str, Any] = {"api_key": creds["api_key"]}
+        if creds.get("api_base"):
+            client_kwargs["base_url"] = creds["api_base"]
+        client = openai.OpenAI(**client_kwargs)
+
+        api_model = creds.get("model_name") or model
+        response = client.chat.completions.create(
+            model=api_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message},
+            ],
+            temperature=0.0,
+            max_tokens=512,
+        )
+        raw = (response.choices[0].message.content or "").strip()
+        if raw.startswith("```"):
+            raw = re.sub(r"^```(?:json)?\s*", "", raw)
+            raw = re.sub(r"\s*```$", "", raw)
+        parsed = json.loads(raw)
+        score = 1 if parsed.get("score") else 0
+        explanation = str(parsed.get("explanation", ""))
+        if score == 1:
+            explanation = ""
+        return {"score": score, "explanation": explanation}
 
     @classmethod
     def get_recommendations(cls, run_id: str) -> List[Dict[str, Any]]:

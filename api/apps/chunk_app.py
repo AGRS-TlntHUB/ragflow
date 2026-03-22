@@ -418,6 +418,7 @@ async def retrieval_test():
 
         meta_data_filter = {}
         chat_mdl = None
+        applied_conditions = []
         if req.get("search_id", ""):
             search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
             meta_data_filter = search_config.get("meta_data_filter", {})
@@ -436,7 +437,10 @@ async def retrieval_test():
 
         if meta_data_filter:
             metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
-            local_doc_ids = await apply_meta_data_filter(meta_data_filter, metas, question, chat_mdl, local_doc_ids)
+            local_doc_ids = await apply_meta_data_filter(
+                meta_data_filter, metas, question, chat_mdl, local_doc_ids,
+                applied_conditions_out=applied_conditions,
+            )
 
         tenants = UserTenantService.query(user_id=user_id)
         for kb_id in kb_ids:
@@ -508,6 +512,19 @@ async def retrieval_test():
         for c in ranks["chunks"]:
             c.pop("vector", None)
         ranks["labels"] = labels
+
+        doc_ids_in_aggs = [d["doc_id"] for d in ranks.get("doc_aggs", []) if d.get("doc_id")]
+        if doc_ids_in_aggs:
+            doc_metadata_map = DocMetadataService.get_metadata_for_documents(doc_ids_in_aggs, kb_ids[0])
+            for agg in ranks["doc_aggs"]:
+                agg["matched_metadata"] = doc_metadata_map.get(agg["doc_id"], {})
+
+        if meta_data_filter and meta_data_filter.get("method"):
+            ranks["applied_meta_filters"] = {
+                "method": meta_data_filter.get("method", ""),
+                "conditions": applied_conditions,
+                "logic": meta_data_filter.get("logic", "and"),
+            }
 
         return get_json_result(data=ranks)
 

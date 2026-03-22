@@ -276,12 +276,20 @@ export default {
   startEvaluationRun: `${api_host}/evaluation/run/start`,
   getEvaluationDatasetCases: (datasetId: string) =>
     `${api_host}/evaluation/dataset/${datasetId}/cases`,
+  getEvaluationSubmissionApiKeyStatus: `${api_host}/evaluation/submission_api_key`,
+  setEvaluationSubmissionApiKey: `${api_host}/evaluation/submission_api_key`,
   downloadEvaluationSubmissionArtifact: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/artifact/submission`,
   downloadEvaluationCodeArchiveArtifact: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/artifact/code_archive`,
+  prepareEvaluationArtifacts: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/prepare_artifacts`,
+  submitEvaluationRun: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/submit`,
   rerunFailedEvaluationRun: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/rerun_failed`,
+  runEvaluationLlmJudge: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/judge`,
 
   // data pipeline
   fetchDataflow: (id: string) => `${api_host}/dataflow/get/${id}`,

@@ -55,6 +55,14 @@ const methods = {
     url: (datasetId: string) => api.getEvaluationDatasetCases(datasetId),
     method: 'get',
   },
+  getEvaluationSubmissionApiKeyStatus: {
+    url: api.getEvaluationSubmissionApiKeyStatus,
+    method: 'get',
+  },
+  setEvaluationSubmissionApiKey: {
+    url: api.setEvaluationSubmissionApiKey,
+    method: 'post',
+  },
   downloadEvaluationSubmissionArtifact: {
     url: (config: { runId: string }) =>
       api.downloadEvaluationSubmissionArtifact(config.runId),
@@ -65,9 +73,22 @@ const methods = {
       api.downloadEvaluationCodeArchiveArtifact(config.runId),
     method: 'get',
   },
+  prepareEvaluationArtifacts: {
+    url: (config: { runId: string }) =>
+      api.prepareEvaluationArtifacts(config.runId),
+    method: 'post',
+  },
+  submitEvaluationRun: {
+    url: (config: { runId: string }) => api.submitEvaluationRun(config.runId),
+    method: 'post',
+  },
   rerunFailedEvaluationRun: {
     url: (config: { runId: string }) =>
       api.rerunFailedEvaluationRun(config.runId),
+    method: 'post',
+  },
+  runEvaluationLlmJudge: {
+    url: (config: { runId: string }) => api.runEvaluationLlmJudge(config.runId),
     method: 'post',
   },
 } as const;

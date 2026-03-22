@@ -61,6 +61,7 @@ export default function SearchingView({
   handleSearch,
   pagination,
   onChange,
+  applied_meta_filters,
 }: ISearchReturnProps & {
   setIsSearching?: Dispatch<SetStateAction<boolean>>;
   searchData: ISearchAppDetailProps;
@@ -185,19 +186,16 @@ export default function SearchingView({
             )}
             {/* retrieval documents */}
             {!isSearchStrEmpty && !sendingLoading && (
-              <>
-                <div className=" mt-3 w-44 ">
-                  <RetrievalDocuments
-                    selectedDocumentIds={selectedDocumentIds}
-                    setSelectedDocumentIds={setSelectedDocumentIds}
-                    onTesting={handleTestChunk}
-                    setLoading={(loading: boolean) => {
-                      setRetrievalLoading(loading);
-                    }}
-                  ></RetrievalDocuments>
-                </div>
-                {/* <div className="w-full border-b border-border-default/80 my-6"></div> */}
-              </>
+              <div className="mt-3 w-full">
+                <RetrievalDocuments
+                  selectedDocumentIds={selectedDocumentIds}
+                  setSelectedDocumentIds={setSelectedDocumentIds}
+                  onTesting={handleTestChunk}
+                  setLoading={(loading: boolean) => {
+                    setRetrievalLoading(loading);
+                  }}
+                />
+              </div>
             )}
             <div className="mt-3 ">
               {chunks?.length > 0 && (

@@ -1279,9 +1279,12 @@ class EvaluationRun(DataBaseModel):
     config_snapshot = JSONField(null=False, help_text="dialog config at time of evaluation")
     metrics_summary = JSONField(null=True, help_text="aggregated metrics")
     status = CharField(max_length=32, null=False, default="PENDING", help_text="PENDING/RUNNING/COMPLETED/FAILED")
+    is_submitted = BooleanField(null=False, default=False, help_text="whether this run has been submitted to platform")
+    submission_payload = JSONField(null=True, help_text="last built submission.json payload")
     progress = FloatField(null=True, default=0.0, help_text="execution progress 0.0-1.0")
     progress_msg = CharField(max_length=32, null=True, help_text="human-readable progress e.g. 2/10")
     run_logs = TextField(null=True, help_text="execution logs captured during the run")
+    judge_status = CharField(max_length=32, null=True, help_text="LLM judge status: null/RUNNING/OK/FAILED")
     created_by = CharField(max_length=32, null=False, index=True, help_text="user who started the run")
     create_time = BigIntegerField(null=False, index=True, help_text="creation timestamp")
     complete_time = BigIntegerField(null=True, help_text="completion timestamp")
@@ -1302,6 +1305,7 @@ class EvaluationResult(DataBaseModel):
     token_usage = JSONField(null=True, help_text="prompt/completion tokens")
     telemetry = JSONField(null=True, help_text="normalized telemetry payload")
     case_status = CharField(max_length=32, null=False, default="OK", help_text="OK/MISSING_TELEMETRY/FAILED")
+    judge_result = JSONField(null=True, help_text="LLM-as-a-judge result: {score: bool, explanation: str} per case")
     create_time = BigIntegerField(null=False, help_text="creation timestamp")
 
     class Meta:
@@ -1679,6 +1683,10 @@ def migrate_db():
     alter_db_add_column(migrator, "evaluation_runs", "progress", FloatField(null=True, default=0.0, help_text="execution progress 0.0-1.0"))
     alter_db_add_column(migrator, "evaluation_runs", "progress_msg", CharField(max_length=32, null=True, help_text="human-readable progress e.g. 2/10"))
     alter_db_add_column(migrator, "evaluation_runs", "run_logs", TextField(null=True, help_text="execution logs captured during the run"))
+    alter_db_add_column(migrator, "evaluation_runs", "is_submitted", BooleanField(null=False, default=False, help_text="whether this run has been submitted to platform"))
+    alter_db_add_column(migrator, "evaluation_runs", "submission_payload", JSONField(null=True, help_text="last built submission.json payload"))
+    alter_db_add_column(migrator, "evaluation_results", "judge_result", JSONField(null=True, help_text="LLM-as-a-judge result"))
+    alter_db_add_column(migrator, "evaluation_runs", "judge_status", CharField(max_length=32, null=True, help_text="LLM judge status: null/RUNNING/OK/FAILED"))
     logging.disable(logging.NOTSET)
     # this is after re-enabling logging to allow logging changed user emails
     migrate_add_unique_email(migrator)

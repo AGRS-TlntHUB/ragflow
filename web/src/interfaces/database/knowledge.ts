@@ -167,6 +167,19 @@ export interface ITestingDocument {
   count: number;
   doc_id: string;
   doc_name: string;
+  matched_metadata?: Record<string, unknown>;
+}
+
+export interface IAppliedMetaFilterCondition {
+  key: string;
+  op: string;
+  value: string | string[];
+}
+
+export interface IAppliedMetaFilters {
+  method: string;
+  conditions: IAppliedMetaFilterCondition[];
+  logic: string;
 }
 
 export interface ITestingResult {
@@ -174,6 +187,7 @@ export interface ITestingResult {
   documents: ITestingDocument[];
   total: number;
   labels?: Record<string, number>;
+  applied_meta_filters?: IAppliedMetaFilters;
 }
 
 export interface INextTestingResult {
@@ -181,6 +195,7 @@ export interface INextTestingResult {
   doc_aggs: ITestingDocument[];
   total: number;
   labels?: Record<string, number>;
+  applied_meta_filters?: IAppliedMetaFilters;
   isRuned?: boolean;
 }
 

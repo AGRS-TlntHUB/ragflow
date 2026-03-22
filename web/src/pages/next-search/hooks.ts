@@ -520,7 +520,7 @@ export const useSearching = ({
     searchStr,
     searchData.id,
   );
-  const { chunks, total } = useSelectTestingResult();
+  const { chunks, total, applied_meta_filters } = useSelectTestingResult();
 
   const handleSearch = useCallback(
     (value: string) => {
@@ -574,6 +574,7 @@ export const useSearching = ({
     handleSearch,
     pagination,
     onChange,
+    applied_meta_filters,
   };
 };
 

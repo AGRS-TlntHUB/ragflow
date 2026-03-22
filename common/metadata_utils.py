@@ -166,6 +166,7 @@ async def apply_meta_data_filter(
     chat_mdl: Any = None,
     base_doc_ids: list[str] | None = None,
     manual_value_resolver: Callable[[dict], dict] | None = None,
+    applied_conditions_out: list | None = None,
 ) -> list[str] | None:
     """
     Apply metadata filtering rules and return the filtered doc_ids.
@@ -190,6 +191,8 @@ async def apply_meta_data_filter(
 
     if method == "auto":
         filters: dict = await gen_meta_filter(chat_mdl, metas, question)
+        if applied_conditions_out is not None:
+            applied_conditions_out.extend(filters.get("conditions", []))
         doc_ids.extend(meta_filter(metas, filters["conditions"], filters.get("logic", "and")))
         if not doc_ids:
             return None
@@ -221,6 +224,8 @@ async def apply_meta_data_filter(
                     constraints=constraints,
                     formats=formats,
                 )
+                if applied_conditions_out is not None:
+                    applied_conditions_out.extend(filters.get("conditions", []))
                 doc_ids.extend(meta_filter(metas, filters["conditions"], filters.get("logic", "and")))
                 if not doc_ids:
                     return None
@@ -228,6 +233,8 @@ async def apply_meta_data_filter(
         filters = meta_data_filter.get("manual", [])
         if manual_value_resolver:
             filters = [manual_value_resolver(flt) for flt in filters]
+        if applied_conditions_out is not None:
+            applied_conditions_out.extend(filters)
         doc_ids.extend(meta_filter(metas, filters, meta_data_filter.get("logic", "and")))
         if filters and not doc_ids:
             doc_ids = ["-999"]

@@ -15,6 +15,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import evaluationService from '@/services/evaluation-service';
 import chatService from '@/services/next-chat-service';
@@ -24,11 +25,12 @@ import { message } from 'antd';
 import {
   LucideFileText,
   LucideRefreshCw,
+  LucideScale,
   LucideSend,
   LucideSettings,
   LucideTrash2,
 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 type EvaluationRun = {
@@ -37,10 +39,12 @@ type EvaluationRun = {
   dialog_id: string;
   name?: string;
   status: string;
+  is_submitted?: boolean;
   progress?: number;
   progress_msg?: string;
   create_time: number;
   complete_time?: number;
+  judge_status?: string | null;
   metrics_summary?: {
     total_cases?: number;
     ok_cases?: number;
@@ -77,6 +81,7 @@ type EvaluationResult = {
   retrieved_chunks?: Record<string, unknown>[];
   telemetry?: EvaluationTelemetry;
   case_status?: string;
+  judge_result?: { score: number; explanation: string } | null;
 };
 
 type EvaluationCase = {
@@ -96,6 +101,13 @@ type EvalTemplate = {
   dataset_content: string;
   script_path?: string;
 };
+
+type SubmitDialogStatus =
+  | 'confirm'
+  | 'preparing'
+  | 'sending'
+  | 'success'
+  | 'error';
 
 const getTemplateRunTag = (templateId: string) => `[tpl:${templateId}]`;
 
@@ -210,10 +222,22 @@ const getCaseStatusMeta = (status?: string) => {
   };
 };
 
+const hasJudgeResult = (
+  jr: { score: number; explanation: string } | null | undefined,
+): jr is { score: number; explanation: string } =>
+  jr != null && typeof jr === 'object' && (jr.score === 0 || jr.score === 1);
+
 const formatMs = (ms: number | null | undefined) => {
   if (ms === null || ms === undefined) return '-';
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(2)}s`;
+};
+
+const formatBytes = (bytes: number | null | undefined) => {
+  if (bytes === null || bytes === undefined || bytes === 0) return null;
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 };
 
 function TelemetryDetails({ telemetry }: { telemetry: EvaluationTelemetry }) {
@@ -428,10 +452,33 @@ export default function Evals() {
     },
     refetchInterval: (query) => {
       const data = query.state.data as { runs: EvaluationRun[] } | undefined;
-      const hasRunning = (data?.runs || []).some((r) =>
-        isRunInProgress(r.status),
+      const runs = data?.runs || [];
+      const hasRunning = runs.some((r) => isRunInProgress(r.status));
+      const hasJudgeRunning = runs.some(
+        (r) => (r.judge_status || '').toUpperCase() === 'RUNNING',
       );
-      return hasRunning ? 2000 : false;
+      return hasRunning || hasJudgeRunning ? 2000 : false;
+    },
+  });
+  const {
+    data: submissionApiKeyStatusData,
+    refetch: refetchSubmissionApiKeyStatus,
+  } = useQuery({
+    queryKey: ['evaluationSubmissionApiKeyStatus'],
+    queryFn: async () => {
+      const { data: response } =
+        await evaluationService.getEvaluationSubmissionApiKeyStatus(
+          {
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (response.code !== 0) {
+        throw new Error(
+          response.message || 'Failed to fetch submission API key status',
+        );
+      }
+      return response.data as { has_api_key: boolean };
     },
   });
 
@@ -522,6 +569,11 @@ export default function Evals() {
         results: EvaluationResult[];
       };
     },
+    refetchInterval: (query) => {
+      const data = query.state.data as { run: EvaluationRun } | undefined;
+      const js = (data?.run?.judge_status || '').toUpperCase();
+      return js === 'RUNNING' ? 2000 : false;
+    },
   });
 
   const { data: casesData } = useQuery({
@@ -552,14 +604,29 @@ export default function Evals() {
   }, [casesData]);
 
   const results = selectedRun ? runDetailData?.results || [] : [];
+  const effectiveJudgeStatus =
+    runDetailData?.run?.judge_status ?? selectedRun?.judge_status ?? null;
+  const hasSubmissionApiKey = !!submissionApiKeyStatusData?.has_api_key;
   const runStatusMeta = getRunStatusMeta(selectedRun?.status || '');
   const canDownloadArtifacts = !['RUNNING', 'PENDING'].includes(
     normalizeStatus(selectedRun?.status || ''),
   );
   const artifactPath = selectedRun ? `run_result_${selectedRun.id}.json` : '-';
-  const [artifactLoading, setArtifactLoading] = useState<
-    'submission' | 'code_archive' | ''
-  >('');
+  const [submitDialogOpen, setSubmitDialogOpen] = useState(false);
+  const [submitDialogStatus, setSubmitDialogStatus] =
+    useState<SubmitDialogStatus>('confirm');
+  const [prepareProgress, setPrepareProgress] = useState(0);
+  const [sendProgress, setSendProgress] = useState(0);
+  const [submitMessage, setSubmitMessage] = useState('');
+  const [submitArtifactSizes, setSubmitArtifactSizes] = useState<{
+    submission_size?: number;
+    code_archive_size?: number;
+  }>({});
+  const [submissionApiKeyDialogOpen, setSubmissionApiKeyDialogOpen] =
+    useState(false);
+  const [submissionApiKeyInput, setSubmissionApiKeyInput] = useState('');
+  const [savingSubmissionApiKey, setSavingSubmissionApiKey] = useState(false);
+  const progressIntervalRef = useRef<number | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsContent, setLogsContent] = useState('');
   const [logsLoading, setLogsLoading] = useState(false);
@@ -757,58 +824,144 @@ export default function Evals() {
     }
   };
 
-  const triggerArtifactDownload = (blob: Blob, filename: string) => {
-    const blobUrl = window.URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = blobUrl;
-    anchor.download = filename;
-    document.body.appendChild(anchor);
-    anchor.click();
-    anchor.remove();
-    window.URL.revokeObjectURL(blobUrl);
+  const clearProgressInterval = () => {
+    if (progressIntervalRef.current !== null) {
+      window.clearInterval(progressIntervalRef.current);
+      progressIntervalRef.current = null;
+    }
   };
 
-  const handleDownloadArtifact = async (
-    artifactType: 'submission' | 'code_archive',
+  const startFakeProgress = (
+    setter: React.Dispatch<React.SetStateAction<number>>,
+    cap = 90,
+    step = 5,
+    intervalMs = 300,
   ) => {
-    if (!selectedRun?.id) {
+    clearProgressInterval();
+    setter(5);
+    progressIntervalRef.current = window.setInterval(() => {
+      setter((prev) => (prev >= cap ? prev : prev + step));
+    }, intervalMs);
+  };
+
+  const handleSubmitDialogOpenChange = (open: boolean) => {
+    if (
+      !open &&
+      (submitDialogStatus === 'preparing' || submitDialogStatus === 'sending')
+    ) {
       return;
     }
-    setArtifactLoading(artifactType);
+    if (!open) {
+      clearProgressInterval();
+    }
+    setSubmitDialogOpen(open);
+  };
+
+  const handleSubmitRun = async () => {
+    if (!selectedRun?.id || !canDownloadArtifacts || !hasSubmissionApiKey) {
+      return;
+    }
+
+    setPrepareProgress(0);
+    setSendProgress(0);
+    setSubmitMessage('');
+    setSubmitArtifactSizes({});
+
+    setSubmitDialogStatus('preparing');
+    startFakeProgress(setPrepareProgress, 90, 8, 200);
+
     try {
-      const commonConfig = {
-        runId: selectedRun.id,
-        responseType: 'blob' as const,
-        headers: { 'X-Skip-Error-Notification': '1' },
+      const { data: prepResponse } =
+        await evaluationService.prepareEvaluationArtifacts(
+          {
+            runId: selectedRun.id,
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (prepResponse.code !== 0) {
+        throw new Error(prepResponse.message || 'Failed to prepare artifacts');
+      }
+      clearProgressInterval();
+      setPrepareProgress(100);
+
+      setSubmitDialogStatus('sending');
+      startFakeProgress(setSendProgress, 85, 3, 400);
+
+      const { data: submitResponse } =
+        await evaluationService.submitEvaluationRun(
+          {
+            runId: selectedRun.id,
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+
+      const sizes = {
+        submission_size: submitResponse.data?.submission_size as
+          | number
+          | undefined,
+        code_archive_size: submitResponse.data?.code_archive_size as
+          | number
+          | undefined,
       };
-      const response =
-        artifactType === 'submission'
-          ? await evaluationService.downloadEvaluationSubmissionArtifact(
-              commonConfig,
-              true,
-            )
-          : await evaluationService.downloadEvaluationCodeArchiveArtifact(
-              commonConfig,
-              true,
-            );
-      const filename =
-        artifactType === 'submission'
-          ? `submission_${selectedRun.id}.json`
-          : `code_archive_${selectedRun.id}.zip`;
-      triggerArtifactDownload(response.data as Blob, filename);
-      message.success(
-        artifactType === 'submission'
-          ? 'submission.json downloaded'
-          : 'code_archive.zip downloaded',
+      setSubmitArtifactSizes(sizes);
+
+      if (submitResponse.code !== 0) {
+        throw new Error(submitResponse.message || 'Submission failed');
+      }
+      clearProgressInterval();
+      setSendProgress(100);
+
+      const submissionUuid =
+        submitResponse.data?.response?.uuid ||
+        submitResponse.data?.response?.id ||
+        '';
+      setSubmitDialogStatus('success');
+      setSubmitMessage(
+        submissionUuid
+          ? `Submission succeeded (${submissionUuid})`
+          : 'Submission succeeded',
       );
-    } catch {
+      await refetchRuns();
+    } catch (error) {
+      clearProgressInterval();
+      setSubmitDialogStatus('error');
+      setSubmitMessage(
+        error instanceof Error ? error.message : 'Submission failed',
+      );
+    }
+  };
+
+  const handleSaveSubmissionApiKey = async () => {
+    const apiKey = submissionApiKeyInput.trim();
+    if (!apiKey) {
+      message.error('API key is required');
+      return;
+    }
+    setSavingSubmissionApiKey(true);
+    try {
+      const { data: response } =
+        await evaluationService.setEvaluationSubmissionApiKey(
+          {
+            data: { api_key: apiKey },
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to save API key');
+      }
+      await refetchSubmissionApiKeyStatus();
+      setSubmissionApiKeyDialogOpen(false);
+      setSubmissionApiKeyInput('');
+      message.success('Submission API key saved');
+    } catch (error) {
       message.error(
-        artifactType === 'submission'
-          ? 'Failed to download submission.json'
-          : 'Failed to download code_archive.zip',
+        error instanceof Error ? error.message : 'Failed to save API key',
       );
     } finally {
-      setArtifactLoading('');
+      setSavingSubmissionApiKey(false);
     }
   };
 
@@ -832,6 +985,47 @@ export default function Evals() {
   };
 
   const [rerunLoading, setRerunLoading] = useState(false);
+  const [judgeDialogOpen, setJudgeDialogOpen] = useState(false);
+  const [judgeModel, setJudgeModel] = useState('gpt-4.1');
+  const [judgePrompt, setJudgePrompt] = useState(
+    'You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, ' +
+      'and the RETRIEVED CHUNKS that were provided to the system as context.\n\n' +
+      'Your task: determine whether the ANSWER is **correct and grounded** in the RETRIEVED CHUNKS.\n' +
+      '- score=1 (true) means the answer is factually correct given the chunks and addresses the question.\n' +
+      '- score=0 (false) means the answer is wrong, hallucinated, unsupported by chunks, or fails to address the question.\n\n' +
+      'Return ONLY valid JSON (no markdown fences) with this schema for EACH request:\n' +
+      '{"score": 1, "explanation": ""}\nor\n{"score": 0, "explanation": "<non-empty reason why the answer failed>"}\n\n' +
+      'Rules:\n- explanation MUST be empty string when score=1.\n- explanation MUST be non-empty when score=0.\n' +
+      '- Do NOT output anything other than the JSON object.',
+  );
+  const [judgeRunning, setJudgeRunning] = useState(false);
+
+  const handleRunJudge = async () => {
+    if (!selectedRun?.id) return;
+    setJudgeRunning(true);
+    setJudgeDialogOpen(false);
+    try {
+      const { data: response } = await evaluationService.runEvaluationLlmJudge(
+        {
+          runId: selectedRun.id,
+          data: { model: judgeModel, prompt: judgePrompt },
+          headers: { 'X-Skip-Error-Notification': '1' },
+        },
+        true,
+      );
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to start LLM judge');
+      }
+      message.success('LLM judge started');
+      await refetchRuns();
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : 'Failed to start LLM judge',
+      );
+    } finally {
+      setJudgeRunning(false);
+    }
+  };
 
   const hasFailedOrMissing = useMemo(() => {
     if (!selectedRun || !canDownloadArtifacts) return false;
@@ -840,6 +1034,12 @@ export default function Evals() {
         r.case_status === 'FAILED' || r.case_status === 'MISSING_TELEMETRY',
     );
   }, [selectedRun, canDownloadArtifacts, results]);
+
+  useEffect(() => {
+    return () => {
+      clearProgressInterval();
+    };
+  }, []);
 
   const handleRerunFailed = async () => {
     if (!selectedRun?.id || !selectedTemplate) return;
@@ -1066,70 +1266,159 @@ export default function Evals() {
                     ? '-'
                     : formatSecondsToHumanReadable(averageExecutionTime)}
                 </div>
-                <div className="text-text-secondary">{t('common.action')}</div>
-                <div className="flex items-center gap-2">
-                  <span
-                    className={`w-2 h-2 rounded-full ${runStatusMeta.dotClassName}`}
-                  />
-                  <span>{runStatusMeta.label}</span>
-                  {canDownloadArtifacts && (
-                    <button
-                      type="button"
-                      onClick={handleShowLogs}
-                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1"
-                    >
-                      <LucideFileText className="size-3.5" />
-                      Show logs
-                    </button>
-                  )}
-                  {hasFailedOrMissing && (
-                    <button
-                      type="button"
-                      onClick={() => void handleRerunFailed()}
-                      disabled={rerunLoading}
-                      className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
-                    >
-                      <LucideRefreshCw
-                        className={`size-3.5 ${rerunLoading ? 'animate-spin' : ''}`}
+                <div className="text-text-secondary">Status</div>
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="inline-flex items-center gap-1.5 text-xs">
+                      <span
+                        className={`w-2 h-2 rounded-full ${(() => {
+                          const s = normalizeStatus(selectedRun?.status || '');
+                          const hasFailed = results.some(
+                            (r) => r.case_status === 'FAILED',
+                          );
+                          if (s === 'RUNNING' || s === 'PENDING')
+                            return 'bg-state-info';
+                          return hasFailed
+                            ? 'bg-state-error'
+                            : 'bg-state-success';
+                        })()}`}
                       />
-                      {rerunLoading ? 'Rerunning...' : 'Rerun failed'}
-                    </button>
-                  )}
+                      Request:{' '}
+                      {(() => {
+                        const s = normalizeStatus(selectedRun?.status || '');
+                        if (s === 'RUNNING' || s === 'PENDING')
+                          return 'Running';
+                        return results.some((r) => r.case_status === 'FAILED')
+                          ? 'Failed'
+                          : 'OK';
+                      })()}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-xs">
+                      <span
+                        className={`w-2 h-2 rounded-full ${(() => {
+                          const s = normalizeStatus(selectedRun?.status || '');
+                          if (s === 'RUNNING' || s === 'PENDING')
+                            return 'bg-state-info';
+                          const hasMissing = results.some(
+                            (r) => r.case_status === 'MISSING_TELEMETRY',
+                          );
+                          return hasMissing
+                            ? 'bg-state-warning'
+                            : 'bg-state-success';
+                        })()}`}
+                      />
+                      Telemetry:{' '}
+                      {(() => {
+                        const s = normalizeStatus(selectedRun?.status || '');
+                        if (s === 'RUNNING' || s === 'PENDING')
+                          return 'Running';
+                        return results.some(
+                          (r) => r.case_status === 'MISSING_TELEMETRY',
+                        )
+                          ? 'Missing'
+                          : 'OK';
+                      })()}
+                    </span>
+                    <span className="inline-flex items-center gap-1.5 text-xs">
+                      <span
+                        className={`w-2 h-2 rounded-full ${(() => {
+                          const js = (effectiveJudgeStatus || '').toUpperCase();
+                          if (js === 'RUNNING') return 'bg-state-info';
+                          if (js === 'OK') return 'bg-state-success';
+                          if (js === 'FAILED') return 'bg-state-error';
+                          return 'bg-fill-tertiary';
+                        })()}`}
+                      />
+                      LLM judge:{' '}
+                      {(() => {
+                        const js = (effectiveJudgeStatus || '').toUpperCase();
+                        if (js === 'RUNNING') return 'Running';
+                        if (js === 'OK') return 'OK';
+                        if (js === 'FAILED') return 'Failed';
+                        return '-';
+                      })()}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {selectedRun.is_submitted && (
+                      <span className="px-2 py-0.5 rounded-md text-xs bg-state-warning/15 text-state-warning">
+                        Submitted
+                      </span>
+                    )}
+                    {canDownloadArtifacts && (
+                      <button
+                        type="button"
+                        onClick={handleShowLogs}
+                        className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1"
+                      >
+                        <LucideFileText className="size-3.5" />
+                        Show logs
+                      </button>
+                    )}
+                    {hasFailedOrMissing && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRerunFailed()}
+                        disabled={rerunLoading}
+                        className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <LucideRefreshCw
+                          className={`size-3.5 ${rerunLoading ? 'animate-spin' : ''}`}
+                        />
+                        {rerunLoading ? 'Rerunning...' : 'Rerun failed'}
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="text-text-secondary">Download artifacts</div>
-                <div className="flex items-center gap-2">
+                <div className="text-text-secondary">Submission</div>
+                <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => {
-                      void handleDownloadArtifact('submission');
-                    }}
-                    disabled={
-                      !selectedRun?.id ||
-                      artifactLoading !== '' ||
-                      !canDownloadArtifacts
-                    }
-                    className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50"
+                    onClick={() => setSubmissionApiKeyDialogOpen(true)}
+                    className="h-8 px-2 rounded-md border border-border-default text-xs"
                   >
-                    {artifactLoading === 'submission'
-                      ? 'Downloading...'
-                      : 'Download submission.json'}
+                    {hasSubmissionApiKey ? 'Update API key' : 'Set API key'}
                   </button>
                   <button
                     type="button"
                     onClick={() => {
-                      void handleDownloadArtifact('code_archive');
+                      setSubmitDialogStatus('confirm');
+                      setSubmitMessage('');
+                      setPrepareProgress(0);
+                      setSendProgress(0);
+                      setSubmitDialogOpen(true);
                     }}
                     disabled={
                       !selectedRun?.id ||
-                      artifactLoading !== '' ||
-                      !canDownloadArtifacts
+                      !canDownloadArtifacts ||
+                      !hasSubmissionApiKey
                     }
                     className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50"
                   >
-                    {artifactLoading === 'code_archive'
-                      ? 'Downloading...'
-                      : 'Download code_archive.zip'}
+                    Submit
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setJudgeDialogOpen(true)}
+                    disabled={
+                      !selectedRun?.id ||
+                      !canDownloadArtifacts ||
+                      judgeRunning ||
+                      (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
+                    }
+                    className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50 inline-flex items-center gap-1"
+                  >
+                    <LucideScale className="size-3.5" />
+                    {judgeRunning ||
+                    (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
+                      ? 'Judging...'
+                      : 'LLM Judge'}
+                  </button>
+                  {!hasSubmissionApiKey && (
+                    <span className="text-xs text-text-secondary">
+                      Set API key to enable submit
+                    </span>
+                  )}
                 </div>
               </div>
             </header>
@@ -1171,6 +1460,26 @@ export default function Evals() {
                           >
                             {getCaseStatusMeta(result.case_status).label}
                           </span>
+                          {hasJudgeResult(result.judge_result) ? (
+                            <span
+                              className={`px-2 py-0.5 rounded-md text-xs ${
+                                result.judge_result.score === 1
+                                  ? 'bg-state-success/10 text-state-success'
+                                  : 'bg-state-error/10 text-state-error'
+                              }`}
+                            >
+                              Judge:{' '}
+                              {result.judge_result.score === 1
+                                ? 'Pass'
+                                : 'Fail'}
+                            </span>
+                          ) : (
+                            effectiveJudgeStatus && (
+                              <span className="px-2 py-0.5 rounded-md text-xs bg-fill-tertiary text-text-secondary">
+                                Judge: -
+                              </span>
+                            )
+                          )}
                           {answerType && (
                             <span className="px-2 py-0.5 rounded-md text-xs bg-fill-tertiary text-text-secondary">
                               {answerType}
@@ -1190,6 +1499,20 @@ export default function Evals() {
                       <div className="text-sm break-words whitespace-pre-wrap select-text">
                         {result.generated_answer || '-'}
                       </div>
+
+                      {active &&
+                        hasJudgeResult(result.judge_result) &&
+                        result.judge_result.score === 0 &&
+                        result.judge_result.explanation && (
+                          <div className="mt-3 p-3 rounded-md bg-state-error/5 border border-state-error/20">
+                            <div className="text-xs font-medium text-state-error mb-1">
+                              Judge explanation
+                            </div>
+                            <div className="text-sm text-state-error/80 break-words whitespace-pre-wrap select-text">
+                              {result.judge_result.explanation}
+                            </div>
+                          </div>
+                        )}
 
                       {active && result.telemetry && (
                         <TelemetryDetails telemetry={result.telemetry} />
@@ -1245,10 +1568,18 @@ export default function Evals() {
                   content !== '-' ||
                   documentName !== '-';
 
+                const judgeFailed =
+                  hasJudgeResult(selectedResult?.judge_result) &&
+                  selectedResult!.judge_result.score === 0;
+
                 return (
                   <div
                     key={`${chunkId}-${idx}`}
-                    className="rounded-lg border border-border-default p-4 bg-bg-base"
+                    className={`rounded-lg border p-4 ${
+                      judgeFailed
+                        ? 'border-state-error/40 bg-state-error/5'
+                        : 'border-border-default bg-bg-base'
+                    }`}
                   >
                     <div className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-sm">
                       <div className="text-text-secondary">Chunk ID</div>
@@ -1497,6 +1828,201 @@ export default function Evals() {
         </AlertDialogContent>
       </AlertDialog>
 
+      <Dialog
+        open={submitDialogOpen}
+        onOpenChange={handleSubmitDialogOpenChange}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>
+              {submitDialogStatus === 'confirm' && 'Submit run?'}
+              {submitDialogStatus === 'preparing' && 'Preparing artifacts'}
+              {submitDialogStatus === 'sending' && 'Sending submission'}
+              {submitDialogStatus === 'success' && 'Submission succeeded'}
+              {submitDialogStatus === 'error' && 'Submission failed'}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 text-sm text-text-secondary">
+            {submitDialogStatus === 'confirm' && (
+              <p>
+                submission.json and code archive ZIP will be generated and sent
+                to the platform API. Continue?
+              </p>
+            )}
+            {(submitDialogStatus === 'preparing' ||
+              submitDialogStatus === 'sending') && (
+              <div className="space-y-3">
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium">
+                      {prepareProgress >= 100
+                        ? 'Artifacts ready'
+                        : 'Building submission.json & code archive…'}
+                    </span>
+                    <span className="text-xs tabular-nums">
+                      {Math.round(prepareProgress)}%
+                    </span>
+                  </div>
+                  <Progress value={prepareProgress} className="h-2" />
+                </div>
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <span className="text-xs font-medium">
+                      {sendProgress >= 100
+                        ? 'Upload complete'
+                        : submitDialogStatus === 'sending'
+                          ? 'Uploading to platform…'
+                          : 'Waiting…'}
+                    </span>
+                    <span className="text-xs tabular-nums">
+                      {Math.round(sendProgress)}%
+                    </span>
+                  </div>
+                  <Progress value={sendProgress} className="h-2" />
+                </div>
+                {formatBytes(submitArtifactSizes.code_archive_size) && (
+                  <div className="text-xs text-text-secondary pt-1">
+                    Code archive:{' '}
+                    {formatBytes(submitArtifactSizes.code_archive_size)}
+                    {formatBytes(submitArtifactSizes.submission_size) &&
+                      ` · submission.json: ${formatBytes(submitArtifactSizes.submission_size)}`}
+                  </div>
+                )}
+              </div>
+            )}
+            {(submitDialogStatus === 'success' ||
+              submitDialogStatus === 'error') && (
+              <div className="space-y-2">
+                <p>
+                  {submitDialogStatus === 'success'
+                    ? submitMessage
+                    : 'Submission failed'}
+                </p>
+                {submitDialogStatus === 'error' && submitMessage && (
+                  <div className="relative group">
+                    <pre className="p-3 text-xs font-mono whitespace-pre-wrap break-all bg-bg-base rounded-md border border-border-default max-h-48 overflow-auto select-text">
+                      {submitMessage}
+                    </pre>
+                    <button
+                      type="button"
+                      className="absolute top-2 right-2 h-6 px-2 rounded text-[10px] border border-border-default bg-bg-card hover:bg-fill-tertiary opacity-0 group-hover:opacity-100 transition-opacity"
+                      onClick={async () => {
+                        try {
+                          await navigator.clipboard.writeText(submitMessage);
+                          message.success('Copied to clipboard');
+                        } catch {
+                          message.error('Failed to copy');
+                        }
+                      }}
+                    >
+                      Copy
+                    </button>
+                  </div>
+                )}
+                {formatBytes(submitArtifactSizes.code_archive_size) && (
+                  <p className="text-xs">
+                    Code archive:{' '}
+                    {formatBytes(submitArtifactSizes.code_archive_size)}
+                    {formatBytes(submitArtifactSizes.submission_size) &&
+                      ` · submission.json: ${formatBytes(submitArtifactSizes.submission_size)}`}
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          <DialogFooter>
+            {submitDialogStatus === 'confirm' && (
+              <>
+                <button
+                  type="button"
+                  className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+                  onClick={() => setSubmitDialogOpen(false)}
+                >
+                  No
+                </button>
+                <button
+                  type="button"
+                  className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+                  onClick={() => {
+                    void handleSubmitRun();
+                  }}
+                >
+                  Yes
+                </button>
+              </>
+            )}
+            {(submitDialogStatus === 'preparing' ||
+              submitDialogStatus === 'sending') && (
+              <button
+                type="button"
+                className="h-9 px-3 rounded-md border border-border-default text-sm opacity-60 cursor-not-allowed"
+                disabled
+              >
+                {submitDialogStatus === 'preparing' ? 'Preparing…' : 'Sending…'}
+              </button>
+            )}
+            {(submitDialogStatus === 'success' ||
+              submitDialogStatus === 'error') && (
+              <button
+                type="button"
+                className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+                onClick={() => setSubmitDialogOpen(false)}
+              >
+                Close
+              </button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog
+        open={submissionApiKeyDialogOpen}
+        onOpenChange={(open) => {
+          setSubmissionApiKeyDialogOpen(open);
+          if (!open) {
+            setSubmissionApiKeyInput('');
+          }
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Submission API key</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-2">
+            <div className="text-sm text-text-secondary">
+              Enter platform API key (used for POST /submissions).
+            </div>
+            <input
+              type="password"
+              value={submissionApiKeyInput}
+              onChange={(event) => setSubmissionApiKeyInput(event.target.value)}
+              placeholder="Paste API key"
+              className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm"
+            />
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+              onClick={() => setSubmissionApiKeyDialogOpen(false)}
+              disabled={savingSubmissionApiKey}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary disabled:opacity-50"
+              onClick={() => {
+                void handleSaveSubmissionApiKey();
+              }}
+              disabled={savingSubmissionApiKey}
+            >
+              {savingSubmissionApiKey ? 'Saving...' : 'Save'}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={logsOpen} onOpenChange={setLogsOpen}>
         <DialogContent className="max-w-3xl max-h-[80vh] flex flex-col">
           <DialogHeader>
@@ -1518,6 +2044,55 @@ export default function Evals() {
               onClick={() => setLogsOpen(false)}
             >
               Close
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={judgeDialogOpen} onOpenChange={setJudgeDialogOpen}>
+        <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
+          <DialogHeader>
+            <DialogTitle>LLM Judge</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 flex-1 min-h-0 overflow-auto">
+            <div className="space-y-2">
+              <div className="text-sm text-text-secondary">Judge model</div>
+              <input
+                value={judgeModel}
+                onChange={(e) => setJudgeModel(e.target.value)}
+                className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm"
+                placeholder="gpt-4.1"
+              />
+            </div>
+            <div className="space-y-2">
+              <div className="text-sm text-text-secondary">System prompt</div>
+              <textarea
+                value={judgePrompt}
+                onChange={(e) => setJudgePrompt(e.target.value)}
+                rows={10}
+                className="w-full px-3 py-2 rounded-md border border-border-default bg-bg-base text-sm font-mono resize-y"
+              />
+            </div>
+            <div className="text-xs text-text-secondary">
+              The judge will evaluate each question/answer pair against
+              retrieved chunks. Results are stored per-case with a boolean score
+              and an explanation for failures.
+            </div>
+          </div>
+          <DialogFooter>
+            <button
+              type="button"
+              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+              onClick={() => setJudgeDialogOpen(false)}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
+              onClick={() => void handleRunJudge()}
+            >
+              Run Judge
             </button>
           </DialogFooter>
         </DialogContent>
