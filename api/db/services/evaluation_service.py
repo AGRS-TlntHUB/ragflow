@@ -1745,6 +1745,7 @@ class EvaluationService(CommonService):
         tenant_id: str = "",
         model: str = "",
         prompt: str = "",
+        only_errors: bool = False,
     ) -> Tuple[bool, str]:
         model = (model or "").strip() or cls.DEFAULT_JUDGE_MODEL
         prompt = (prompt or "").strip() or cls.DEFAULT_JUDGE_PROMPT
@@ -1767,13 +1768,13 @@ class EvaluationService(CommonService):
 
         threading.Thread(
             target=cls._execute_llm_judge,
-            args=(run_id, creds, model, prompt),
+            args=(run_id, creds, model, prompt, only_errors),
             daemon=True,
         ).start()
         return True, run_id
 
     @classmethod
-    def _execute_llm_judge(cls, run_id: str, creds: Dict[str, Any], model: str, system_prompt: str):
+    def _execute_llm_judge(cls, run_id: str, creds: Dict[str, Any], model: str, system_prompt: str, only_errors: bool = False):
         try:
             result_rows = list(
                 EvaluationResult.select().where(EvaluationResult.run_id == run_id)
@@ -1787,6 +1788,12 @@ class EvaluationService(CommonService):
             case_map = {}
             if dataset_id:
                 case_map = {c["id"]: c for c in cls.get_test_cases(dataset_id)}
+
+            if only_errors:
+                result_rows = [
+                    r for r in result_rows
+                    if isinstance(r.judge_result, dict) and r.judge_result.get("score") == -1
+                ]
 
             all_ok = True
             for row in result_rows:
@@ -1813,12 +1820,27 @@ class EvaluationService(CommonService):
                     judge_result = cls._call_judge_llm(creds, model, system_prompt, user_message)
                 except Exception as e:
                     logging.error("LLM judge call failed for result %s: %s", result_dict.get("id"), e)
-                    judge_result = {"score": 0, "explanation": f"Judge call failed: {e}"}
+                    err_str = str(e)
+                    is_rate_limit = "429" in err_str or "rate_limit" in err_str.lower() or "rate limit" in err_str.lower()
+                    judge_result = {
+                        "score": -1 if is_rate_limit else 0,
+                        "explanation": f"Judge call failed: {e}",
+                    }
                     all_ok = False
 
                 EvaluationResult.update(judge_result=judge_result).where(
                     EvaluationResult.id == result_dict["id"]
                 ).execute()
+
+            if only_errors and all_ok:
+                all_results = list(
+                    EvaluationResult.select().where(EvaluationResult.run_id == run_id)
+                )
+                all_ok = all(
+                    not (isinstance(r.judge_result, dict) and r.judge_result.get("score") in (-1, 0)
+                         and "Judge call failed" in (r.judge_result.get("explanation") or ""))
+                    for r in all_results
+                )
 
             EvaluationRun.update(
                 judge_status="OK" if all_ok else "FAILED"

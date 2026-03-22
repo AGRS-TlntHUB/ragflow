@@ -603,11 +603,13 @@ async def run_llm_judge(run_id):
         req = await get_request_json()
         model = req.get("model", "")
         prompt = req.get("prompt", "")
+        only_errors = bool(req.get("only_errors", False))
         success, result = EvaluationService.run_llm_judge(
             run_id=run_id,
             tenant_id=current_user.id,
             model=model,
             prompt=prompt,
+            only_errors=only_errors,
         )
         if not success:
             return get_data_error_result(message=result)

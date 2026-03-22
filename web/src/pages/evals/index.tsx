@@ -231,7 +231,13 @@ const getCaseStatusMeta = (status?: string) => {
 const hasJudgeResult = (
   jr: { score: number; explanation: string } | null | undefined,
 ): jr is { score: number; explanation: string } =>
-  jr != null && typeof jr === 'object' && (jr.score === 0 || jr.score === 1);
+  jr != null &&
+  typeof jr === 'object' &&
+  (jr.score === 0 || jr.score === 1 || jr.score === -1);
+
+const isJudgeError = (
+  jr: { score: number; explanation: string } | null | undefined,
+): boolean => jr != null && typeof jr === 'object' && jr.score === -1;
 
 const formatMs = (ms: number | null | undefined) => {
   if (ms === null || ms === undefined) return '-';
@@ -636,12 +642,19 @@ export default function Evals() {
   const [logsContent, setLogsContent] = useState('');
   const [logsLoading, setLogsLoading] = useState(false);
   const [showOnlyJudgeFailed, setShowOnlyJudgeFailed] = useState(false);
+  const [showOnlyJudgeErrors, setShowOnlyJudgeErrors] = useState(false);
   const filteredResults = useMemo(() => {
-    if (!showOnlyJudgeFailed) return results;
-    return results.filter(
-      (r) => hasJudgeResult(r.judge_result) && r.judge_result.score === 0,
-    );
-  }, [results, showOnlyJudgeFailed]);
+    let filtered = results;
+    if (showOnlyJudgeFailed) {
+      filtered = filtered.filter(
+        (r) => hasJudgeResult(r.judge_result) && r.judge_result.score === 0,
+      );
+    }
+    if (showOnlyJudgeErrors) {
+      filtered = filtered.filter((r) => isJudgeError(r.judge_result));
+    }
+    return filtered;
+  }, [results, showOnlyJudgeFailed, showOnlyJudgeErrors]);
   const selectedResult = useMemo(
     () => filteredResults.find((item) => item.id === selectedResultId),
     [filteredResults, selectedResultId],
@@ -1049,6 +1062,38 @@ export default function Evals() {
     );
   }, [selectedRun, canDownloadArtifacts, results]);
 
+  const hasJudgeErrors = useMemo(() => {
+    if (!selectedRun || !canDownloadArtifacts) return false;
+    return results.some((r) => isJudgeError(r.judge_result));
+  }, [selectedRun, canDownloadArtifacts, results]);
+
+  const [rerunJudgeErrorsLoading, setRerunJudgeErrorsLoading] = useState(false);
+  const handleRerunJudgeErrors = async () => {
+    if (!selectedRun?.id) return;
+    setRerunJudgeErrorsLoading(true);
+    try {
+      const { data: response } = await evaluationService.runEvaluationLlmJudge(
+        {
+          runId: selectedRun.id,
+          data: { model: judgeModel, prompt: judgePrompt, only_errors: true },
+          headers: { 'X-Skip-Error-Notification': '1' },
+        },
+        true,
+      );
+      if (response.code !== 0) {
+        throw new Error(response.message || 'Failed to rerun judge errors');
+      }
+      message.success('Rerunning judge errors');
+      await refetchRuns();
+    } catch (error) {
+      message.error(
+        error instanceof Error ? error.message : 'Failed to rerun judge errors',
+      );
+    } finally {
+      setRerunJudgeErrorsLoading(false);
+    }
+  };
+
   useEffect(() => {
     return () => {
       clearProgressInterval();
@@ -1383,6 +1428,26 @@ export default function Evals() {
                         {rerunLoading ? 'Rerunning...' : 'Rerun failed'}
                       </button>
                     )}
+                    {hasJudgeErrors && (
+                      <button
+                        type="button"
+                        onClick={() => void handleRerunJudgeErrors()}
+                        disabled={
+                          rerunJudgeErrorsLoading ||
+                          judgeRunning ||
+                          (effectiveJudgeStatus || '').toUpperCase() ===
+                            'RUNNING'
+                        }
+                        className="h-7 px-2 rounded-md border border-orange-400/50 text-xs text-orange-600 hover:bg-orange-500/10 inline-flex items-center gap-1 disabled:opacity-50"
+                      >
+                        <LucideRefreshCw
+                          className={`size-3.5 ${rerunJudgeErrorsLoading ? 'animate-spin' : ''}`}
+                        />
+                        {rerunJudgeErrorsLoading
+                          ? 'Rerunning...'
+                          : 'Rerun judge errors'}
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div className="text-text-secondary">Submission</div>
@@ -1444,15 +1509,30 @@ export default function Evals() {
                   <div className="text-sm text-text-secondary">
                     Showing {filteredResults.length} of {results.length}
                   </div>
-                  <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
-                    <input
-                      type="checkbox"
-                      className="cursor-pointer"
-                      checked={showOnlyJudgeFailed}
-                      onChange={(e) => setShowOnlyJudgeFailed(e.target.checked)}
-                    />
-                    Only judge failed
-                  </label>
+                  <div className="flex items-center gap-4">
+                    <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer"
+                        checked={showOnlyJudgeFailed}
+                        onChange={(e) =>
+                          setShowOnlyJudgeFailed(e.target.checked)
+                        }
+                      />
+                      Only judge failed
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        className="cursor-pointer"
+                        checked={showOnlyJudgeErrors}
+                        onChange={(e) =>
+                          setShowOnlyJudgeErrors(e.target.checked)
+                        }
+                      />
+                      Only judge errors
+                    </label>
+                  </div>
                 </div>
                 {filteredResults.map((result) => {
                   const active = result.id === selectedResultId;
@@ -1494,13 +1574,17 @@ export default function Evals() {
                               className={`px-2 py-0.5 rounded-md text-xs ${
                                 result.judge_result.score === 1
                                   ? 'bg-state-success/10 text-state-success'
-                                  : 'bg-state-error/10 text-state-error'
+                                  : result.judge_result.score === -1
+                                    ? 'bg-orange-500/10 text-orange-600'
+                                    : 'bg-state-error/10 text-state-error'
                               }`}
                             >
                               Judge:{' '}
                               {result.judge_result.score === 1
                                 ? 'Pass'
-                                : 'Fail'}
+                                : result.judge_result.score === -1
+                                  ? 'Error'
+                                  : 'Fail'}
                             </span>
                           ) : (
                             effectiveJudgeStatus && (
@@ -1531,13 +1615,34 @@ export default function Evals() {
 
                       {active &&
                         hasJudgeResult(result.judge_result) &&
-                        result.judge_result.score === 0 &&
+                        (result.judge_result.score === 0 ||
+                          result.judge_result.score === -1) &&
                         result.judge_result.explanation && (
-                          <div className="mt-3 p-3 rounded-md bg-state-error/5 border border-state-error/20">
-                            <div className="text-xs font-medium text-state-error mb-1">
-                              Judge explanation
+                          <div
+                            className={`mt-3 p-3 rounded-md ${
+                              result.judge_result.score === -1
+                                ? 'bg-orange-500/5 border border-orange-500/20'
+                                : 'bg-state-error/5 border border-state-error/20'
+                            }`}
+                          >
+                            <div
+                              className={`text-xs font-medium mb-1 ${
+                                result.judge_result.score === -1
+                                  ? 'text-orange-600'
+                                  : 'text-state-error'
+                              }`}
+                            >
+                              {result.judge_result.score === -1
+                                ? 'Judge error'
+                                : 'Judge explanation'}
                             </div>
-                            <div className="text-sm text-state-error/80 break-words whitespace-pre-wrap select-text">
+                            <div
+                              className={`text-sm break-words whitespace-pre-wrap select-text ${
+                                result.judge_result.score === -1
+                                  ? 'text-orange-600/80'
+                                  : 'text-state-error/80'
+                              }`}
+                            >
                               {result.judge_result.explanation}
                             </div>
                           </div>
@@ -1597,17 +1702,21 @@ export default function Evals() {
                   content !== '-' ||
                   documentName !== '-';
 
-                const judgeFailed =
-                  hasJudgeResult(selectedResult?.judge_result) &&
-                  selectedResult!.judge_result.score === 0;
+                const judgeScore = hasJudgeResult(selectedResult?.judge_result)
+                  ? selectedResult!.judge_result.score
+                  : null;
+                const judgeFailed = judgeScore === 0;
+                const judgeErrored = judgeScore === -1;
 
                 return (
                   <div
                     key={`${chunkId}-${idx}`}
                     className={`rounded-lg border p-4 ${
-                      judgeFailed
-                        ? 'border-state-error/40 bg-state-error/5'
-                        : 'border-border-default bg-bg-base'
+                      judgeErrored
+                        ? 'border-orange-400/40 bg-orange-500/5'
+                        : judgeFailed
+                          ? 'border-state-error/40 bg-state-error/5'
+                          : 'border-border-default bg-bg-base'
                     }`}
                   >
                     <div className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-sm">
