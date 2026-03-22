@@ -842,6 +842,7 @@ class EvaluationService(CommonService):
             results = []
             done = 0
             progress_lock = threading.Lock()
+            run_wall_start = timer()
             with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
                 futures = {
                     executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
@@ -862,8 +863,9 @@ class EvaluationService(CommonService):
                             progress=done / total,
                             progress_msg=f"{done}/{total}",
                         ).where(EvaluationRun.id == run_id).execute()
+            run_wall_seconds = timer() - run_wall_start
 
-            metrics_summary = cls._compute_summary_metrics(results)
+            metrics_summary = cls._compute_summary_metrics(results, run_wall_seconds=run_wall_seconds)
             run_status = cls._derive_run_status(results)
 
             EvaluationRun.update(
@@ -1095,24 +1097,24 @@ class EvaluationService(CommonService):
         }
 
     @classmethod
-    def _compute_summary_metrics(cls, results: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Compute summary metrics across all test cases.
-
-        Args:
-            results: List of result dictionaries
-
-        Returns:
-            Summary metrics dictionary
-        """
+    def _compute_summary_metrics(
+        cls,
+        results: List[Dict[str, Any]],
+        run_wall_seconds: Optional[float] = None,
+    ) -> Dict[str, Any]:
         if not results:
             return {}
 
         hydrated_results = [cls._hydrate_result_with_status(result) for result in results]
 
-        # Aggregate metrics
-        metric_sums = {}
-        metric_counts = {}
+        metric_sums: Dict[str, float] = {}
+        metric_counts: Dict[str, int] = {}
+
+        ttft_vals: List[int] = []
+        tpot_vals: List[int] = []
+        total_time_vals: List[int] = []
+        input_token_vals: List[int] = []
+        output_token_vals: List[int] = []
 
         for result in hydrated_results:
             if result.get("case_status") == cls.CASE_STATUS_FAILED:
@@ -1123,6 +1125,26 @@ class EvaluationService(CommonService):
                     metric_sums[key] = metric_sums.get(key, 0) + value
                     metric_counts[key] = metric_counts.get(key, 0) + 1
 
+            telemetry = result.get("telemetry")
+            if isinstance(telemetry, dict):
+                timing = telemetry.get("timing") or {}
+                usage = telemetry.get("usage") or {}
+                v = cls._safe_int(timing.get("ttft_ms"))
+                if v is not None and v > 0:
+                    ttft_vals.append(v)
+                v = cls._safe_int(timing.get("tpot_ms"))
+                if v is not None and v > 0:
+                    tpot_vals.append(v)
+                v = cls._safe_int(timing.get("total_time_ms"))
+                if v is not None and v > 0:
+                    total_time_vals.append(v)
+                v = cls._safe_int(usage.get("input_tokens"))
+                if v is not None and v > 0:
+                    input_token_vals.append(v)
+                v = cls._safe_int(usage.get("output_tokens"))
+                if v is not None and v > 0:
+                    output_token_vals.append(v)
+
         failed_count = sum(1 for result in hydrated_results if result.get("case_status") == cls.CASE_STATUS_FAILED)
         missing_telemetry_count = sum(
             1
@@ -1131,22 +1153,29 @@ class EvaluationService(CommonService):
         )
         ok_count = sum(1 for result in hydrated_results if result.get("case_status") == cls.CASE_STATUS_OK)
         completed_count = len(hydrated_results) - failed_count
-        avg_execution_time = (
-            sum(r.get("execution_time", 0) for r in hydrated_results) / len(hydrated_results)
-            if hydrated_results
-            else 0.0
-        )
 
-        # Compute averages
-        summary = {
+        summary: Dict[str, Any] = {
             "total_cases": len(hydrated_results),
             "completed_cases": completed_count,
             "ok_cases": ok_count,
             "missing_telemetry_cases": missing_telemetry_count,
             "failed_cases": failed_count,
-            "avg_execution_time": avg_execution_time,
             "telemetry_complete_rate": (ok_count / completed_count) if completed_count else 0.0,
         }
+
+        if run_wall_seconds is not None:
+            summary["run_duration_s"] = round(run_wall_seconds, 3)
+
+        if ttft_vals:
+            summary["avg_ttft_ms"] = int(sum(ttft_vals) / len(ttft_vals))
+        if tpot_vals:
+            summary["avg_tpot_ms"] = int(sum(tpot_vals) / len(tpot_vals))
+        if total_time_vals:
+            summary["avg_total_time_ms"] = int(sum(total_time_vals) / len(total_time_vals))
+        if input_token_vals:
+            summary["avg_input_tokens"] = int(sum(input_token_vals) / len(input_token_vals))
+        if output_token_vals:
+            summary["avg_output_tokens"] = int(sum(output_token_vals) / len(output_token_vals))
 
         for key in metric_sums:
             summary[f"avg_{key}"] = metric_sums[key] / metric_counts[key]
@@ -1249,6 +1278,7 @@ class EvaluationService(CommonService):
             results = []
             done = pre_copied_count
             progress_lock = threading.Lock()
+            run_wall_start = timer()
             with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_EVALUATIONS) as executor:
                 futures = {
                     executor.submit(cls._evaluate_single_case, run_id, case, dialog): case
@@ -1269,12 +1299,13 @@ class EvaluationService(CommonService):
                             progress=done / total,
                             progress_msg=f"{done}/{total}",
                         ).where(EvaluationRun.id == run_id).execute()
+            run_wall_seconds = timer() - run_wall_start
 
             all_result_rows = list(
                 EvaluationResult.select().where(EvaluationResult.run_id == run_id)
             )
             all_hydrated = [cls._hydrate_result_with_status(r.to_dict()) for r in all_result_rows]
-            metrics_summary = cls._compute_summary_metrics(all_hydrated)
+            metrics_summary = cls._compute_summary_metrics(all_hydrated, run_wall_seconds=run_wall_seconds)
             run_status = cls._derive_run_status(all_hydrated)
 
             EvaluationRun.update(
@@ -1880,12 +1911,12 @@ class EvaluationService(CommonService):
                     ]
                 })
 
-            # Slow response time
-            if metrics.get("avg_execution_time", 0) > 5.0:
+            avg_total_ms = metrics.get("avg_total_time_ms", 0)
+            if avg_total_ms > 5000:
                 recommendations.append({
                     "issue": "Slow Response Time",
                     "severity": "medium",
-                    "description": f"Average response time is {metrics['avg_execution_time']:.2f}s",
+                    "description": f"Average response time is {avg_total_ms / 1000:.2f}s",
                     "suggestions": [
                         "Reduce top_k to retrieve fewer chunks",
                         "Optimize embedding model selection",
