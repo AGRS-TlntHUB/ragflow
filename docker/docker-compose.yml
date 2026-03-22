@@ -45,6 +45,11 @@ services:
       - ./entrypoint.sh:/ragflow/entrypoint.sh
       - ../data_saved:/ragflow/data_saved
       - ../data:/ragflow/data
+      # DEV ONLY: mount local backend source for fast iteration; comment out for production
+      - ../api:/ragflow/api
+      - ../rag:/ragflow/rag
+      - ../agent:/ragflow/agent
+      - ../common:/ragflow/common
     env_file: .env
     ulimits:
       nofile:
@@ -99,6 +104,11 @@ services:
       - ./entrypoint.sh:/ragflow/entrypoint.sh
       - ../data_saved:/ragflow/data_saved
       - ../data:/ragflow/data
+      # DEV ONLY: mount local backend source for fast iteration; comment out for production
+      - ../api:/ragflow/api
+      - ../rag:/ragflow/rag
+      - ../agent:/ragflow/agent
+      - ../common:/ragflow/common
     env_file: .env
     ulimits:
       nofile:

@@ -9,6 +9,7 @@ COMPOSE_FILE="docker/docker-compose.yml"
 RAGFLOW_IMAGE="$(awk -F= '/^RAGFLOW_IMAGE=/{print $2}' "$ROOT_DIR/docker/.env")"
 DAEMON_MODE=""
 BUILD_IMAGE=0
+RESTART_ONLY=0
 
 while (($#)); do
   case "$1" in
@@ -18,9 +19,12 @@ while (($#)); do
     --build|--rebuild)
       BUILD_IMAGE=1
       ;;
+    --restart)
+      RESTART_ONLY=1
+      ;;
     *)
       echo "Unknown option: $1" >&2
-      echo "Usage: $0 [--build] [-d]" >&2
+      echo "Usage: $0 [--build] [--restart] [-d]" >&2
       exit 1
       ;;
   esac
@@ -41,7 +45,9 @@ fi
 
 echo "Using RAGFlow image: $RAGFLOW_IMAGE"
 
-if [ "$BUILD_IMAGE" -eq 1 ]; then
+if [ "$RESTART_ONLY" -eq 1 ]; then
+  docker compose -f "$COMPOSE_FILE" restart ragflow-cpu
+elif [ "$BUILD_IMAGE" -eq 1 ]; then
   docker build --platform linux/amd64 -f Dockerfile -t "$RAGFLOW_IMAGE" .
   docker compose -f "$COMPOSE_FILE" up -d --force-recreate mysql redis minio infinity ragflow-cpu
 else
