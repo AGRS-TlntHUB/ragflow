@@ -1752,6 +1752,8 @@ class EvaluationService(CommonService):
         prompt: str = "",
         only_errors: bool = False,
         only_failed: bool = False,
+        parallel: bool = False,
+        max_workers: Optional[int] = None,
     ) -> Tuple[bool, str]:
         model = (model or "").strip() or cls.DEFAULT_JUDGE_MODEL
         prompt = (prompt or "").strip() or cls.DEFAULT_JUDGE_PROMPT
@@ -1779,6 +1781,7 @@ class EvaluationService(CommonService):
         threading.Thread(
             target=cls._execute_llm_judge,
             args=(run_id, creds, model, prompt, only_errors, only_failed),
+            kwargs={"parallel": parallel, "max_workers": max_workers},
             daemon=True,
         ).start()
         return True, run_id
@@ -1809,6 +1812,8 @@ class EvaluationService(CommonService):
         system_prompt: str,
         only_errors: bool = False,
         only_failed: bool = False,
+        parallel: bool = False,
+        max_workers: Optional[int] = None,
     ):
         try:
             result_rows = list(
@@ -1834,6 +1839,8 @@ class EvaluationService(CommonService):
                     r for r in result_rows
                     if isinstance(r.judge_result, dict) and r.judge_result.get("score") == 0
                 ]
+
+            effective_judge_workers = 1 if not parallel else (max_workers or cls.MAX_CONCURRENT_JUDGE_CALLS)
 
             total = len(result_rows)
             done = 0
@@ -1881,7 +1888,7 @@ class EvaluationService(CommonService):
                 ).execute()
                 return judge_result
 
-            with ThreadPoolExecutor(max_workers=cls.MAX_CONCURRENT_JUDGE_CALLS) as executor:
+            with ThreadPoolExecutor(max_workers=effective_judge_workers) as executor:
                 futures = {executor.submit(_judge_one, row): row for row in result_rows}
                 for future in as_completed(futures):
                     if cls._is_judge_cancelled(run_id):

@@ -612,6 +612,11 @@ async def run_llm_judge(run_id):
         prompt = req.get("prompt", "")
         only_errors = bool(req.get("only_errors", False))
         only_failed = bool(req.get("only_failed", False))
+        parallel = bool(req.get("parallel", False))
+        raw_max_workers = req.get("max_workers")
+        max_workers = int(raw_max_workers) if raw_max_workers is not None else None
+        if max_workers is not None and max_workers < 1:
+            return get_data_error_result(message="max_workers must be >= 1")
         success, result = EvaluationService.run_llm_judge(
             run_id=run_id,
             tenant_id=current_user.id,
@@ -619,6 +624,8 @@ async def run_llm_judge(run_id):
             prompt=prompt,
             only_errors=only_errors,
             only_failed=only_failed,
+            parallel=parallel,
+            max_workers=max_workers,
         )
         if not success:
             return get_data_error_result(message=result)

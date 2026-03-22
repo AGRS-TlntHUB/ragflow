@@ -91,6 +91,11 @@ const methods = {
     url: (config: { runId: string }) => api.runEvaluationLlmJudge(config.runId),
     method: 'post',
   },
+  cancelEvaluationLlmJudge: {
+    url: (config: { runId: string }) =>
+      api.cancelEvaluationLlmJudge(config.runId),
+    method: 'post',
+  },
 } as const;
 
 const evaluationService = registerNextServer<keyof typeof methods>(methods);

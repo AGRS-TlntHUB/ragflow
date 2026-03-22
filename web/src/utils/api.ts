@@ -294,6 +294,8 @@ export default {
     `${api_host}/evaluation/run/${runId}/rerun_failed`,
   runEvaluationLlmJudge: (runId: string) =>
     `${api_host}/evaluation/run/${runId}/judge`,
+  cancelEvaluationLlmJudge: (runId: string) =>
+    `${api_host}/evaluation/run/${runId}/judge/cancel`,
 
   // data pipeline
   fetchDataflow: (id: string) => `${api_host}/dataflow/get/${id}`,

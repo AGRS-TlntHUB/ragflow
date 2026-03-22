@@ -989,6 +989,11 @@ export default function Evals() {
 
   const [rerunLoading, setRerunLoading] = useState(false);
   const [judgeDialogOpen, setJudgeDialogOpen] = useState(false);
+  const [judgeDialogMode, setJudgeDialogMode] = useState<
+    'judge' | 'rerun_errored' | 'rerun_failed'
+  >('judge');
+  const [judgeParallel, setJudgeParallel] = useState(false);
+  const [judgeMaxWorkers, setJudgeMaxWorkers] = useState(2);
   const [judgeModel, setJudgeModel] = useState('gpt-4.1');
   const [judgePrompt, setJudgePrompt] = useState(
     'You are an impartial grading judge. You will receive a QUESTION, an ANSWER produced by a RAG system, ' +
@@ -1003,15 +1008,30 @@ export default function Evals() {
   );
   const [judgeRunning, setJudgeRunning] = useState(false);
 
+  const openJudgeDialog = (
+    mode: 'judge' | 'rerun_errored' | 'rerun_failed',
+  ) => {
+    setJudgeDialogMode(mode);
+    setJudgeDialogOpen(true);
+  };
+
   const handleRunJudge = async () => {
     if (!selectedRun?.id) return;
+    const mode = judgeDialogMode;
     setJudgeRunning(true);
     setJudgeDialogOpen(false);
     try {
       const { data: response } = await evaluationService.runEvaluationLlmJudge(
         {
           runId: selectedRun.id,
-          data: { model: judgeModel, prompt: judgePrompt },
+          data: {
+            model: judgeModel,
+            prompt: judgePrompt,
+            only_errors: mode === 'rerun_errored',
+            only_failed: mode === 'rerun_failed',
+            parallel: judgeParallel,
+            max_workers: judgeParallel ? judgeMaxWorkers : undefined,
+          },
           headers: { 'X-Skip-Error-Notification': '1' },
         },
         true,
@@ -1019,7 +1039,13 @@ export default function Evals() {
       if (response.code !== 0) {
         throw new Error(response.message || 'Failed to start LLM judge');
       }
-      message.success('LLM judge started');
+      const successMsg =
+        mode === 'rerun_errored'
+          ? 'Re-running errored LLM judge cases'
+          : mode === 'rerun_failed'
+            ? 'Re-running failed LLM judge cases'
+            : 'LLM judge started';
+      message.success(successMsg);
       await refetchRuns();
     } catch (error) {
       message.error(
@@ -1071,69 +1097,6 @@ export default function Evals() {
     if (!selectedRun || !canDownloadArtifacts) return false;
     return results.some((r) => isJudgeError(r.judge_result));
   }, [selectedRun, canDownloadArtifacts, results]);
-
-  const [rerunJudgeFailedLoading, setRerunJudgeFailedLoading] = useState(false);
-  const handleRerunJudgeFailed = async () => {
-    if (!selectedRun?.id) return;
-    setRerunJudgeFailedLoading(true);
-    try {
-      const { data: response } = await evaluationService.runEvaluationLlmJudge(
-        {
-          runId: selectedRun.id,
-          data: { model: judgeModel, prompt: judgePrompt, only_failed: true },
-          headers: { 'X-Skip-Error-Notification': '1' },
-        },
-        true,
-      );
-      if (response.code !== 0) {
-        throw new Error(
-          response.message || 'Failed to rerun failed LLM judge cases',
-        );
-      }
-      message.success('Re-running failed LLM judge cases');
-      await refetchRuns();
-    } catch (error) {
-      message.error(
-        error instanceof Error
-          ? error.message
-          : 'Failed to rerun failed LLM judge cases',
-      );
-    } finally {
-      setRerunJudgeFailedLoading(false);
-    }
-  };
-
-  const [rerunJudgeErroredLoading, setRerunJudgeErroredLoading] =
-    useState(false);
-  const handleRerunJudgeErrored = async () => {
-    if (!selectedRun?.id) return;
-    setRerunJudgeErroredLoading(true);
-    try {
-      const { data: response } = await evaluationService.runEvaluationLlmJudge(
-        {
-          runId: selectedRun.id,
-          data: { model: judgeModel, prompt: judgePrompt, only_errors: true },
-          headers: { 'X-Skip-Error-Notification': '1' },
-        },
-        true,
-      );
-      if (response.code !== 0) {
-        throw new Error(
-          response.message || 'Failed to rerun errored LLM judge cases',
-        );
-      }
-      message.success('Re-running errored LLM judge cases');
-      await refetchRuns();
-    } catch (error) {
-      message.error(
-        error instanceof Error
-          ? error.message
-          : 'Failed to rerun errored LLM judge cases',
-      );
-    } finally {
-      setRerunJudgeErroredLoading(false);
-    }
-  };
 
   useEffect(() => {
     return () => {
@@ -1532,39 +1495,29 @@ export default function Evals() {
                   {hasJudgeErrored && (
                     <button
                       type="button"
-                      onClick={() => void handleRerunJudgeErrored()}
+                      onClick={() => openJudgeDialog('rerun_errored')}
                       disabled={
-                        rerunJudgeErroredLoading ||
                         judgeRunning ||
                         (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
                       }
                       className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
                     >
-                      <LucideRefreshCw
-                        className={`size-3.5 ${rerunJudgeErroredLoading ? 'animate-spin' : ''}`}
-                      />
-                      {rerunJudgeErroredLoading
-                        ? 'Re-running...'
-                        : 'Re-run errored LLM judge'}
+                      <LucideRefreshCw className="size-3.5" />
+                      Re-run errored LLM judge
                     </button>
                   )}
                   {hasJudgeFailed && (
                     <button
                       type="button"
-                      onClick={() => void handleRerunJudgeFailed()}
+                      onClick={() => openJudgeDialog('rerun_failed')}
                       disabled={
-                        rerunJudgeFailedLoading ||
                         judgeRunning ||
                         (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
                       }
                       className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
                     >
-                      <LucideRefreshCw
-                        className={`size-3.5 ${rerunJudgeFailedLoading ? 'animate-spin' : ''}`}
-                      />
-                      {rerunJudgeFailedLoading
-                        ? 'Re-running...'
-                        : 'Re-run failed LLM judge'}
+                      <LucideRefreshCw className="size-3.5" />
+                      Re-run failed LLM judge
                     </button>
                   )}
                 </div>
@@ -1610,7 +1563,7 @@ export default function Evals() {
                   ) : (
                     <button
                       type="button"
-                      onClick={() => setJudgeDialogOpen(true)}
+                      onClick={() => openJudgeDialog('judge')}
                       disabled={
                         !selectedRun?.id ||
                         !canDownloadArtifacts ||
@@ -2369,7 +2322,13 @@ export default function Evals() {
       <Dialog open={judgeDialogOpen} onOpenChange={setJudgeDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[80vh] flex flex-col">
           <DialogHeader>
-            <DialogTitle>LLM Judge</DialogTitle>
+            <DialogTitle>
+              {judgeDialogMode === 'rerun_errored'
+                ? 'Re-run errored LLM Judge'
+                : judgeDialogMode === 'rerun_failed'
+                  ? 'Re-run failed LLM Judge'
+                  : 'LLM Judge'}
+            </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 flex-1 min-h-0 overflow-auto">
             <div className="space-y-2">
@@ -2389,6 +2348,35 @@ export default function Evals() {
                 rows={10}
                 className="w-full px-3 py-2 rounded-md border border-border-default bg-bg-base text-sm font-mono resize-y"
               />
+            </div>
+            <div className="pt-2 border-t border-border-default space-y-3">
+              <div className="text-sm font-medium">Parallelism</div>
+              <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  className="cursor-pointer"
+                  checked={judgeParallel}
+                  onChange={(e) => setJudgeParallel(e.target.checked)}
+                />
+                Parallel evaluation
+              </label>
+              <div className="space-y-1">
+                <div className="text-sm text-text-secondary">
+                  Number of parallel evaluations
+                </div>
+                <input
+                  type="number"
+                  min={2}
+                  max={200}
+                  value={judgeMaxWorkers}
+                  disabled={!judgeParallel}
+                  onChange={(e) => {
+                    const val = Math.max(2, parseInt(e.target.value, 10) || 2);
+                    setJudgeMaxWorkers(val);
+                  }}
+                  className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm disabled:opacity-50"
+                />
+              </div>
             </div>
             <div className="text-xs text-text-secondary">
               The judge will evaluate each question/answer pair against
