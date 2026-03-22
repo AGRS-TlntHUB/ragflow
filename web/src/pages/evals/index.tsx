@@ -480,28 +480,6 @@ export default function Evals() {
       return hasRunning || hasJudgeRunning ? 2000 : false;
     },
   });
-  const {
-    data: submissionApiKeyStatusData,
-    refetch: refetchSubmissionApiKeyStatus,
-  } = useQuery({
-    queryKey: ['evaluationSubmissionApiKeyStatus'],
-    queryFn: async () => {
-      const { data: response } =
-        await evaluationService.getEvaluationSubmissionApiKeyStatus(
-          {
-            headers: { 'X-Skip-Error-Notification': '1' },
-          },
-          true,
-        );
-      if (response.code !== 0) {
-        throw new Error(
-          response.message || 'Failed to fetch submission API key status',
-        );
-      }
-      return response.data as { has_api_key: boolean };
-    },
-  });
-
   const runs = useMemo(() => runsData?.runs || [], [runsData]);
   const runsForSelectedTemplate = useMemo(() => {
     if (!selectedTemplate) {
@@ -626,7 +604,6 @@ export default function Evals() {
   const results = selectedRun ? runDetailData?.results || [] : [];
   const effectiveJudgeStatus =
     runDetailData?.run?.judge_status ?? selectedRun?.judge_status ?? null;
-  const hasSubmissionApiKey = !!submissionApiKeyStatusData?.has_api_key;
   const runStatusMeta = getRunStatusMeta(selectedRun?.status || '');
   const canDownloadArtifacts = !['RUNNING', 'PENDING'].includes(
     normalizeStatus(selectedRun?.status || ''),
@@ -641,10 +618,6 @@ export default function Evals() {
     submission_size?: number;
     code_archive_size?: number;
   }>({});
-  const [submissionApiKeyDialogOpen, setSubmissionApiKeyDialogOpen] =
-    useState(false);
-  const [submissionApiKeyInput, setSubmissionApiKeyInput] = useState('');
-  const [savingSubmissionApiKey, setSavingSubmissionApiKey] = useState(false);
   const progressIntervalRef = useRef<number | null>(null);
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsContent, setLogsContent] = useState('');
@@ -893,7 +866,7 @@ export default function Evals() {
   };
 
   const handleSubmitRun = async () => {
-    if (!selectedRun?.id || !canDownloadArtifacts || !hasSubmissionApiKey) {
+    if (!selectedRun?.id || !canDownloadArtifacts) {
       return;
     }
 
@@ -965,38 +938,6 @@ export default function Evals() {
       setSubmitMessage(
         error instanceof Error ? error.message : 'Submission failed',
       );
-    }
-  };
-
-  const handleSaveSubmissionApiKey = async () => {
-    const apiKey = submissionApiKeyInput.trim();
-    if (!apiKey) {
-      message.error('API key is required');
-      return;
-    }
-    setSavingSubmissionApiKey(true);
-    try {
-      const { data: response } =
-        await evaluationService.setEvaluationSubmissionApiKey(
-          {
-            data: { api_key: apiKey },
-            headers: { 'X-Skip-Error-Notification': '1' },
-          },
-          true,
-        );
-      if (response.code !== 0) {
-        throw new Error(response.message || 'Failed to save API key');
-      }
-      await refetchSubmissionApiKeyStatus();
-      setSubmissionApiKeyDialogOpen(false);
-      setSubmissionApiKeyInput('');
-      message.success('Submission API key saved');
-    } catch (error) {
-      message.error(
-        error instanceof Error ? error.message : 'Failed to save API key',
-      );
-    } finally {
-      setSavingSubmissionApiKey(false);
     }
   };
 
@@ -1516,13 +1457,6 @@ export default function Evals() {
                 <div className="flex items-center gap-2 flex-wrap">
                   <button
                     type="button"
-                    onClick={() => setSubmissionApiKeyDialogOpen(true)}
-                    className="h-8 px-2 rounded-md border border-border-default text-xs"
-                  >
-                    {hasSubmissionApiKey ? 'Update API key' : 'Set API key'}
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => {
                       setSubmitDialogStatus('confirm');
                       setSubmitMessage('');
@@ -1530,11 +1464,7 @@ export default function Evals() {
                       setSendProgress(0);
                       setSubmitDialogOpen(true);
                     }}
-                    disabled={
-                      !selectedRun?.id ||
-                      !canDownloadArtifacts ||
-                      !hasSubmissionApiKey
-                    }
+                    disabled={!selectedRun?.id || !canDownloadArtifacts}
                     className="h-8 px-2 rounded-md border border-border-default text-xs disabled:opacity-50"
                   >
                     Submit
@@ -1556,11 +1486,6 @@ export default function Evals() {
                       ? 'Judging...'
                       : 'LLM Judge'}
                   </button>
-                  {!hasSubmissionApiKey && (
-                    <span className="text-xs text-text-secondary">
-                      Set API key to enable submit
-                    </span>
-                  )}
                 </div>
               </div>
             </header>
@@ -2171,54 +2096,6 @@ export default function Evals() {
                 Close
               </button>
             )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={submissionApiKeyDialogOpen}
-        onOpenChange={(open) => {
-          setSubmissionApiKeyDialogOpen(open);
-          if (!open) {
-            setSubmissionApiKeyInput('');
-          }
-        }}
-      >
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Submission API key</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-2">
-            <div className="text-sm text-text-secondary">
-              Enter platform API key (used for POST /submissions).
-            </div>
-            <input
-              type="password"
-              value={submissionApiKeyInput}
-              onChange={(event) => setSubmissionApiKeyInput(event.target.value)}
-              placeholder="Paste API key"
-              className="w-full h-9 px-3 rounded-md border border-border-default bg-bg-base text-sm"
-            />
-          </div>
-          <DialogFooter>
-            <button
-              type="button"
-              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary"
-              onClick={() => setSubmissionApiKeyDialogOpen(false)}
-              disabled={savingSubmissionApiKey}
-            >
-              Cancel
-            </button>
-            <button
-              type="button"
-              className="h-9 px-3 rounded-md border border-border-default text-sm hover:bg-fill-tertiary disabled:opacity-50"
-              onClick={() => {
-                void handleSaveSubmissionApiKey();
-              }}
-              disabled={savingSubmissionApiKey}
-            >
-              {savingSubmissionApiKey ? 'Saving...' : 'Save'}
-            </button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

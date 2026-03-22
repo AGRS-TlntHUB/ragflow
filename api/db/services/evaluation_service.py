@@ -76,50 +76,35 @@ class EvaluationService(CommonService):
     REPO_ROOT = Path(__file__).resolve().parents[3]
 
     @classmethod
-    def has_submission_api_key(cls) -> bool:
-        record = SystemSettings.get_or_none(
-            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
-        )
-        if not record:
-            return False
-        return bool((record.value or "").strip())
-
-    @classmethod
-    def set_submission_api_key(cls, api_key: str) -> Tuple[bool, str]:
-        value = (api_key or "").strip()
-        if not value:
-            return False, "API key cannot be empty"
-        now = current_timestamp()
-        payload = {
-            "source": "variable",
-            "data_type": "string",
-            "value": value,
-            "update_time": now,
-        }
-        existing = SystemSettings.get_or_none(
-            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
-        )
-        if existing:
-            SystemSettings.update(payload).where(
-                SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
-            ).execute()
-            return True, "ok"
-
-        SystemSettings.create(
-            name=cls.SUBMISSION_API_KEY_SETTING_NAME,
-            create_time=now,
-            **payload,
-        )
-        return True, "ok"
+    def _load_env_file(cls) -> None:
+        env_path = cls.REPO_ROOT / ".env"
+        if not env_path.is_file():
+            return
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            key = key.strip()
+            value = value.strip().strip("'\"")
+            if key and key not in os.environ:
+                os.environ[key] = value
 
     @classmethod
     def _get_submission_api_key(cls) -> str:
-        record = SystemSettings.get_or_none(
-            SystemSettings.name == cls.SUBMISSION_API_KEY_SETTING_NAME
-        )
-        if not record:
-            return ""
-        return (record.value or "").strip()
+        key = os.getenv("ARLC_API_KEY", "").strip()
+        if key:
+            return key
+        cls._load_env_file()
+        return os.getenv("ARLC_API_KEY", "").strip()
+
+    @classmethod
+    def has_submission_api_key(cls) -> bool:
+        return bool(cls._get_submission_api_key())
+
+    @classmethod
+    def set_submission_api_key(cls, api_key: str) -> Tuple[bool, str]:
+        return False, "API key is managed via ARLC_API_KEY in .env"
 
     @classmethod
     def _ensure_eval_type_script_mapping(cls, tenant_id: str, user_id: str) -> None:
