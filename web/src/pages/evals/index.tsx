@@ -640,23 +640,34 @@ export default function Evals() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsContent, setLogsContent] = useState('');
   const [logsLoading, setLogsLoading] = useState(false);
-  const [showOnlyJudgeFailed, setShowOnlyJudgeFailed] = useState(false);
-  const [showOnlyJudgeErrors, setShowOnlyJudgeErrors] = useState(false);
+  const [resultFilter, setResultFilter] = useState<
+    'all' | 'judge_failed' | 'judge_errors' | 'null_answer'
+  >('all');
   const [templateEvalSettings, setTemplateEvalSettings] = useState<
     Record<string, { parallel: boolean; maxWorkers: number }>
   >({});
   const filteredResults = useMemo(() => {
-    let filtered = results;
-    if (showOnlyJudgeFailed) {
-      filtered = filtered.filter(
+    if (resultFilter === 'judge_failed') {
+      return results.filter(
         (r) => hasJudgeResult(r.judge_result) && r.judge_result.score === 0,
       );
     }
-    if (showOnlyJudgeErrors) {
-      filtered = filtered.filter((r) => isJudgeError(r.judge_result));
+    if (resultFilter === 'judge_errors') {
+      return results.filter((r) => isJudgeError(r.judge_result));
     }
-    return filtered;
-  }, [results, showOnlyJudgeFailed, showOnlyJudgeErrors]);
+    if (resultFilter === 'null_answer') {
+      return results.filter((r) => {
+        const ans = r.generated_answer;
+        return (
+          ans === null ||
+          ans === undefined ||
+          ans === '' ||
+          (typeof ans === 'string' && ans.trim().toLowerCase() === 'null')
+        );
+      });
+    }
+    return results;
+  }, [results, resultFilter]);
   const selectedResult = useMemo(
     () => filteredResults.find((item) => item.id === selectedResultId),
     [filteredResults, selectedResultId],
@@ -990,7 +1001,7 @@ export default function Evals() {
   const [rerunLoading, setRerunLoading] = useState(false);
   const [judgeDialogOpen, setJudgeDialogOpen] = useState(false);
   const [judgeDialogMode, setJudgeDialogMode] = useState<
-    'judge' | 'rerun_errored' | 'rerun_failed'
+    'judge' | 'rerun_errored'
   >('judge');
   const [judgeParallel, setJudgeParallel] = useState(false);
   const [judgeMaxWorkers, setJudgeMaxWorkers] = useState(2);
@@ -1008,9 +1019,7 @@ export default function Evals() {
   );
   const [judgeRunning, setJudgeRunning] = useState(false);
 
-  const openJudgeDialog = (
-    mode: 'judge' | 'rerun_errored' | 'rerun_failed',
-  ) => {
+  const openJudgeDialog = (mode: 'judge' | 'rerun_errored') => {
     setJudgeDialogMode(mode);
     setJudgeDialogOpen(true);
   };
@@ -1028,7 +1037,6 @@ export default function Evals() {
             model: judgeModel,
             prompt: judgePrompt,
             only_errors: mode === 'rerun_errored',
-            only_failed: mode === 'rerun_failed',
             parallel: judgeParallel,
             max_workers: judgeParallel ? judgeMaxWorkers : undefined,
           },
@@ -1039,13 +1047,11 @@ export default function Evals() {
       if (response.code !== 0) {
         throw new Error(response.message || 'Failed to start LLM judge');
       }
-      const successMsg =
+      message.success(
         mode === 'rerun_errored'
           ? 'Re-running errored LLM judge cases'
-          : mode === 'rerun_failed'
-            ? 'Re-running failed LLM judge cases'
-            : 'LLM judge started';
-      message.success(successMsg);
+          : 'LLM judge started',
+      );
       await refetchRuns();
     } catch (error) {
       message.error(
@@ -1075,6 +1081,37 @@ export default function Evals() {
       message.error(
         error instanceof Error ? error.message : 'Failed to cancel LLM judge',
       );
+    }
+  };
+
+  const [rerunJudgeFailedLoading, setRerunJudgeFailedLoading] = useState(false);
+  const handleRerunJudgeFailed = async () => {
+    if (!selectedRun?.id || !selectedTemplate) return;
+    setRerunJudgeFailedLoading(true);
+    try {
+      const { data: response } =
+        await evaluationService.rerunJudgeFailedEvaluationRun(
+          {
+            runId: selectedRun.id,
+            headers: { 'X-Skip-Error-Notification': '1' },
+          },
+          true,
+        );
+      if (response.code !== 0) {
+        throw new Error(
+          response.message || 'Failed to rerun judge-failed cases',
+        );
+      }
+      await refetchRuns();
+      message.success('Rerun of judge-failed cases started');
+    } catch (error) {
+      message.error(
+        error instanceof Error
+          ? error.message
+          : 'Failed to rerun judge-failed cases',
+      );
+    } finally {
+      setRerunJudgeFailedLoading(false);
     }
   };
 
@@ -1509,15 +1546,16 @@ export default function Evals() {
                   {hasJudgeFailed && (
                     <button
                       type="button"
-                      onClick={() => openJudgeDialog('rerun_failed')}
-                      disabled={
-                        judgeRunning ||
-                        (effectiveJudgeStatus || '').toUpperCase() === 'RUNNING'
-                      }
+                      onClick={() => void handleRerunJudgeFailed()}
+                      disabled={rerunJudgeFailedLoading}
                       className="h-7 px-2 rounded-md border border-border-default text-xs hover:bg-fill-tertiary inline-flex items-center gap-1 disabled:opacity-50"
                     >
-                      <LucideRefreshCw className="size-3.5" />
-                      Re-run failed LLM judge
+                      <LucideRefreshCw
+                        className={`size-3.5 ${rerunJudgeFailedLoading ? 'animate-spin' : ''}`}
+                      />
+                      {rerunJudgeFailedLoading
+                        ? 'Re-running...'
+                        : 'Re-run failed LLM judge'}
                     </button>
                   )}
                 </div>
@@ -1588,25 +1626,45 @@ export default function Evals() {
                   <div className="flex items-center gap-4">
                     <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
                       <input
-                        type="checkbox"
+                        type="radio"
+                        name="resultFilter"
                         className="cursor-pointer"
-                        checked={showOnlyJudgeFailed}
-                        onChange={(e) =>
-                          setShowOnlyJudgeFailed(e.target.checked)
+                        checked={resultFilter === 'judge_failed'}
+                        onChange={() =>
+                          setResultFilter((prev) =>
+                            prev === 'judge_failed' ? 'all' : 'judge_failed',
+                          )
                         }
                       />
                       Only judge failed
                     </label>
                     <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
                       <input
-                        type="checkbox"
+                        type="radio"
+                        name="resultFilter"
                         className="cursor-pointer"
-                        checked={showOnlyJudgeErrors}
-                        onChange={(e) =>
-                          setShowOnlyJudgeErrors(e.target.checked)
+                        checked={resultFilter === 'judge_errors'}
+                        onChange={() =>
+                          setResultFilter((prev) =>
+                            prev === 'judge_errors' ? 'all' : 'judge_errors',
+                          )
                         }
                       />
                       Only judge errors
+                    </label>
+                    <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                      <input
+                        type="radio"
+                        name="resultFilter"
+                        className="cursor-pointer"
+                        checked={resultFilter === 'null_answer'}
+                        onChange={() =>
+                          setResultFilter((prev) =>
+                            prev === 'null_answer' ? 'all' : 'null_answer',
+                          )
+                        }
+                      />
+                      Only null
                     </label>
                   </div>
                 </div>
@@ -2325,9 +2383,7 @@ export default function Evals() {
             <DialogTitle>
               {judgeDialogMode === 'rerun_errored'
                 ? 'Re-run errored LLM Judge'
-                : judgeDialogMode === 'rerun_failed'
-                  ? 'Re-run failed LLM Judge'
-                  : 'LLM Judge'}
+                : 'LLM Judge'}
             </DialogTitle>
           </DialogHeader>
           <div className="space-y-4 flex-1 min-h-0 overflow-auto">
