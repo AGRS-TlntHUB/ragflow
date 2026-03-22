@@ -32,7 +32,7 @@ from api.db.services.doc_metadata_service import DocMetadataService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.langfuse_service import TenantLangfuseService
 from api.db.services.llm_service import LLMBundle
-from common.metadata_utils import apply_meta_data_filter
+from common.metadata_utils import apply_meta_data_filter, multi_search_retrieval
 from api.db.services.tenant_llm_service import TenantLLMService
 from api.db.joint_services.tenant_model_service import get_model_config_by_id, get_model_config_by_type_and_name, get_tenant_default_model_by_type
 from common.time_utils import current_timestamp, datetime_format
@@ -546,6 +546,10 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
     if prompt_config.get("cross_languages"):
         questions = [await cross_languages(dialog.tenant_id, dialog.llm_id, questions[0], prompt_config["cross_languages"])]
 
+    applied_conditions = []
+    metas = {}
+    multi_search = dialog.meta_data_filter.get("multi_search", False) if dialog.meta_data_filter else False
+
     if dialog.meta_data_filter:
         metas = DocMetadataService.get_flatted_meta_by_kbs(dialog.kb_ids)
         attachments = await apply_meta_data_filter(
@@ -554,6 +558,7 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
             questions[-1],
             chat_mdl,
             attachments,
+            applied_conditions_out=applied_conditions,
         )
 
     if prompt_config.get("keyword", False):
@@ -606,21 +611,40 @@ async def async_chat(dialog, messages, stream=True, **kwargs):
 
         else:
             if embd_mdl:
-                kbinfos = await retriever.retrieval(
-                    " ".join(questions),
-                    embd_mdl,
-                    tenant_ids,
-                    dialog.kb_ids,
-                    1,
-                    dialog.top_n,
-                    dialog.similarity_threshold,
-                    dialog.vector_similarity_weight,
-                    doc_ids=attachments,
-                    top=dialog.top_k,
-                    aggs=True,
-                    rerank_mdl=rerank_mdl,
-                    rank_feature=label_question(" ".join(questions), kbs),
-                )
+                if multi_search and applied_conditions and metas:
+                    kbinfos = await multi_search_retrieval(
+                        conditions=applied_conditions,
+                        metas=metas,
+                        question=" ".join(questions),
+                        retriever=retriever,
+                        embd_mdl=embd_mdl,
+                        tenant_ids=tenant_ids,
+                        kb_ids=dialog.kb_ids,
+                        page=1,
+                        page_size=dialog.top_n,
+                        similarity_threshold=dialog.similarity_threshold,
+                        vector_similarity_weight=dialog.vector_similarity_weight,
+                        top_k=dialog.top_k,
+                        base_doc_ids=attachments if isinstance(attachments, list) else [],
+                        rerank_mdl=rerank_mdl,
+                        rank_feature=label_question(" ".join(questions), kbs),
+                    )
+                else:
+                    kbinfos = await retriever.retrieval(
+                        " ".join(questions),
+                        embd_mdl,
+                        tenant_ids,
+                        dialog.kb_ids,
+                        1,
+                        dialog.top_n,
+                        dialog.similarity_threshold,
+                        dialog.vector_similarity_weight,
+                        doc_ids=attachments,
+                        top=dialog.top_k,
+                        aggs=True,
+                        rerank_mdl=rerank_mdl,
+                        rank_feature=label_question(" ".join(questions), kbs),
+                    )
                 if prompt_config.get("toc_enhance"):
                     cks = await retriever.retrieval_by_toc(" ".join(questions), kbinfos["chunks"], tenant_ids, chat_mdl, dialog.top_n)
                     if cks:

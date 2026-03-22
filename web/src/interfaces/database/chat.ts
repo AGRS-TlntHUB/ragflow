@@ -78,6 +78,7 @@ interface MetaDataFilter {
         format?: string;
       }
   >;
+  multi_search?: boolean;
 }
 
 interface Manual {

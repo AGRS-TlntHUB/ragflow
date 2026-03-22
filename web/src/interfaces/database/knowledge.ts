@@ -182,12 +182,19 @@ export interface IAppliedMetaFilters {
   logic: string;
 }
 
+export interface IMultiSearchConditionResult {
+  condition: { key: string; value: string; op: string };
+  chunks: ITestingChunk[];
+  total: number;
+}
+
 export interface ITestingResult {
   chunks: ITestingChunk[];
   documents: ITestingDocument[];
   total: number;
   labels?: Record<string, number>;
   applied_meta_filters?: IAppliedMetaFilters;
+  multi_search_results?: IMultiSearchConditionResult[];
 }
 
 export interface INextTestingResult {

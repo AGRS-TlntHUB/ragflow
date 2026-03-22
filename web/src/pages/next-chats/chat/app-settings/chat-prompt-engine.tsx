@@ -12,6 +12,7 @@ import {
   FormLabel,
   FormMessage,
 } from '@/components/ui/form';
+import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { UseKnowledgeGraphFormField } from '@/components/use-knowledge-graph-item';
 import { useTranslate } from '@/hooks/common-hooks';
@@ -54,6 +55,20 @@ export function ChatPromptEngine() {
       ></SwitchFormField>
       <UseKnowledgeGraphFormField name="prompt_config.use_kg"></UseKnowledgeGraphFormField>
       <RerankFormFields></RerankFormFields>
+      <FormField
+        control={form.control}
+        name="multi_search"
+        render={({ field }) => (
+          <FormItem className="flex flex-row items-start space-x-3 space-y-0">
+            <FormControl>
+              <Switch checked={field.value} onCheckedChange={field.onChange} />
+            </FormControl>
+            <FormLabel tooltip={t('multiSearchTip')}>
+              {t('multiSearch')}
+            </FormLabel>
+          </FormItem>
+        )}
+      />
       <CrossLanguageFormField></CrossLanguageFormField>
       <DynamicVariableForm></DynamicVariableForm>
     </div>

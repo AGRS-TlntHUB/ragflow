@@ -39,7 +39,7 @@ from api.db.services.dialog_service import DialogService, async_ask, async_chat,
 from api.db.services.doc_metadata_service import DocMetadataService
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.llm_service import LLMBundle
-from common.metadata_utils import apply_meta_data_filter, convert_conditions, meta_filter
+from common.metadata_utils import apply_meta_data_filter, convert_conditions, meta_filter, multi_search_retrieval
 from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from api.db.joint_services.tenant_model_service import get_tenant_default_model_by_type, get_model_config_by_id, \
@@ -1143,9 +1143,13 @@ async def retrieval_test_embedded():
 
         meta_data_filter = {}
         chat_mdl = None
+        applied_conditions = []
+        metas = {}
+        multi_search_enabled = False
         if req.get("search_id", ""):
             search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
             meta_data_filter = search_config.get("meta_data_filter", {})
+            multi_search_enabled = search_config.get("multi_search_enabled", False)
             if meta_data_filter.get("method") in ["auto", "semi_auto"]:
                 chat_id = search_config.get("chat_id", "")
                 if chat_id:
@@ -1153,7 +1157,6 @@ async def retrieval_test_embedded():
                 else:
                     chat_model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
                 chat_mdl = LLMBundle(tenant_id, chat_model_config)
-            # Apply search_config settings if not explicitly provided in request
             if not req.get("similarity_threshold"):
                 similarity_threshold = float(search_config.get("similarity_threshold", similarity_threshold))
             if not req.get("vector_similarity_weight"):
@@ -1164,13 +1167,17 @@ async def retrieval_test_embedded():
                 rerank_id = search_config.get("rerank_id", "")
         else:
             meta_data_filter = req.get("meta_data_filter") or {}
+            multi_search_enabled = req.get("multi_search_enabled", False)
             if meta_data_filter.get("method") in ["auto", "semi_auto"]:
                 chat_model_config = get_tenant_default_model_by_type(tenant_id, LLMType.CHAT)
                 chat_mdl = LLMBundle(tenant_id, chat_model_config)
 
         if meta_data_filter:
             metas = DocMetadataService.get_flatted_meta_by_kbs(kb_ids)
-            local_doc_ids = await apply_meta_data_filter(meta_data_filter, metas, _question, chat_mdl, local_doc_ids)
+            local_doc_ids = await apply_meta_data_filter(
+                meta_data_filter, metas, _question, chat_mdl, local_doc_ids,
+                applied_conditions_out=applied_conditions,
+            )
 
         tenants = UserTenantService.query(user_id=tenant_id)
         for kb_id in kb_ids:
@@ -1208,10 +1215,31 @@ async def retrieval_test_embedded():
             _question += await keyword_extraction(chat_mdl, _question)
 
         labels = label_question(_question, [kb])
-        ranks = await settings.retriever.retrieval(
-            _question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
-            local_doc_ids, rerank_mdl=rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
-        )
+        if multi_search_enabled and applied_conditions and metas:
+            base_ids = list(doc_ids) if doc_ids else []
+            ranks = await multi_search_retrieval(
+                conditions=applied_conditions,
+                metas=metas,
+                question=_question,
+                retriever=settings.retriever,
+                embd_mdl=embd_mdl,
+                tenant_ids=tenant_ids,
+                kb_ids=kb_ids,
+                page=page,
+                page_size=size,
+                similarity_threshold=similarity_threshold,
+                vector_similarity_weight=vector_similarity_weight,
+                top_k=top,
+                base_doc_ids=base_ids,
+                rerank_mdl=rerank_mdl,
+                highlight=req.get("highlight"),
+                rank_feature=labels,
+            )
+        else:
+            ranks = await settings.retriever.retrieval(
+                _question, embd_mdl, tenant_ids, kb_ids, page, size, similarity_threshold, vector_similarity_weight, top,
+                local_doc_ids, rerank_mdl=rerank_mdl, highlight=req.get("highlight"), rank_feature=labels
+            )
         if use_kg:
             default_chat_model = get_tenant_default_model_by_type(kb.tenant_id, LLMType.CHAT)
             ck = await settings.kg_retriever.retrieval(_question, tenant_ids, kb_ids, embd_mdl,

@@ -26,7 +26,7 @@ from api.db.services.doc_metadata_service import DocMetadataService
 from api.utils.image_utils import store_chunk_image
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.llm_service import LLMBundle
-from common.metadata_utils import apply_meta_data_filter
+from common.metadata_utils import apply_meta_data_filter, multi_search_retrieval
 from api.db.services.search_service import SearchService
 from api.db.services.user_service import UserTenantService
 from api.db.joint_services.tenant_model_service import get_model_config_by_id, get_tenant_default_model_by_type, get_model_config_by_type_and_name
@@ -419,9 +419,12 @@ async def retrieval_test():
         meta_data_filter = {}
         chat_mdl = None
         applied_conditions = []
+        metas = {}
+        multi_search_enabled = False
         if req.get("search_id", ""):
             search_config = SearchService.get_detail(req.get("search_id", "")).get("search_config", {})
             meta_data_filter = search_config.get("meta_data_filter", {})
+            multi_search_enabled = search_config.get("multi_search_enabled", False)
             if meta_data_filter.get("method") in ["auto", "semi_auto"]:
                 chat_id = search_config.get("chat_id", "")
                 if chat_id:
@@ -431,6 +434,7 @@ async def retrieval_test():
                 chat_mdl = LLMBundle(user_id, chat_model_config)
         else:
             meta_data_filter = req.get("meta_data_filter") or {}
+            multi_search_enabled = req.get("multi_search_enabled", False)
             if meta_data_filter.get("method") in ["auto", "semi_auto"]:
                 chat_model_config = get_tenant_default_model_by_type(user_id, LLMType.CHAT)
                 chat_mdl = LLMBundle(user_id, chat_model_config)
@@ -483,20 +487,40 @@ async def retrieval_test():
             _question += await keyword_extraction(chat_mdl, _question)
 
         labels = label_question(_question, [kb])
-        ranks = await settings.retriever.retrieval(
-                        _question,
-                        embd_mdl,
-                        tenant_ids,
-                        kb_ids,
-                        page,
-                        size,
-                        float(req.get("similarity_threshold", 0.0)),
-                        float(req.get("vector_similarity_weight", 0.3)),
-                        doc_ids=local_doc_ids,
-                        top=top,
-                        rerank_mdl=rerank_mdl,
-                        rank_feature=labels
-                    )
+        if multi_search_enabled and applied_conditions and metas:
+            base_ids = list(doc_ids) if doc_ids else []
+            ranks = await multi_search_retrieval(
+                conditions=applied_conditions,
+                metas=metas,
+                question=_question,
+                retriever=settings.retriever,
+                embd_mdl=embd_mdl,
+                tenant_ids=tenant_ids,
+                kb_ids=kb_ids,
+                page=page,
+                page_size=size,
+                similarity_threshold=float(req.get("similarity_threshold", 0.0)),
+                vector_similarity_weight=float(req.get("vector_similarity_weight", 0.3)),
+                top_k=top,
+                base_doc_ids=base_ids,
+                rerank_mdl=rerank_mdl,
+                rank_feature=labels,
+            )
+        else:
+            ranks = await settings.retriever.retrieval(
+                            _question,
+                            embd_mdl,
+                            tenant_ids,
+                            kb_ids,
+                            page,
+                            size,
+                            float(req.get("similarity_threshold", 0.0)),
+                            float(req.get("vector_similarity_weight", 0.3)),
+                            doc_ids=local_doc_ids,
+                            top=top,
+                            rerank_mdl=rerank_mdl,
+                            rank_feature=labels
+                        )
 
         if use_kg:
             default_chat_model_config = get_tenant_default_model_by_type(user_id, LLMType.CHAT)

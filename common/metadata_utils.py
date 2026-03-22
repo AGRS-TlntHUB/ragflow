@@ -242,6 +242,82 @@ async def apply_meta_data_filter(
     return doc_ids
 
 
+async def multi_search_retrieval(
+    conditions: list[dict],
+    metas: dict,
+    question: str,
+    retriever,
+    embd_mdl,
+    tenant_ids: list,
+    kb_ids: list,
+    page: int,
+    page_size: int,
+    similarity_threshold: float = 0.2,
+    vector_similarity_weight: float = 0.3,
+    top_k: int = 1024,
+    base_doc_ids: list | None = None,
+    rerank_mdl=None,
+    highlight=False,
+    rank_feature=None,
+    aggs: bool = True,
+) -> dict:
+    import asyncio
+
+    if not conditions:
+        return {"chunks": [], "total": 0, "doc_aggs": [], "multi_search_results": []}
+
+    async def _search_one(cond):
+        cond_doc_ids = meta_filter(metas, [cond], "and")
+        if not cond_doc_ids:
+            return {
+                "condition": {"key": cond.get("key", ""), "value": str(cond.get("value", "")), "op": cond.get("op", "=")},
+                "chunks": [], "total": 0, "doc_aggs": [],
+            }
+        doc_ids = list(set((base_doc_ids or []) + cond_doc_ids))
+        ranks = await retriever.retrieval(
+            question, embd_mdl, tenant_ids, kb_ids,
+            page, page_size, similarity_threshold, vector_similarity_weight,
+            top=top_k, doc_ids=doc_ids, rerank_mdl=rerank_mdl,
+            highlight=highlight, rank_feature=rank_feature, aggs=aggs,
+        )
+        return {
+            "condition": {"key": cond.get("key", ""), "value": str(cond.get("value", "")), "op": cond.get("op", "=")},
+            "chunks": ranks.get("chunks", []),
+            "total": ranks.get("total", 0),
+            "doc_aggs": ranks.get("doc_aggs", []) if isinstance(ranks.get("doc_aggs"), list) else [],
+        }
+
+    results = await asyncio.gather(*[_search_one(c) for c in conditions])
+
+    seen = set()
+    agg_chunks = []
+    for r in results:
+        for ch in r["chunks"]:
+            cid = ch.get("chunk_id") or ch.get("id", "")
+            if cid and cid in seen:
+                continue
+            if cid:
+                seen.add(cid)
+            agg_chunks.append(ch)
+
+    doc_agg_map = {}
+    for r in results:
+        for a in r.get("doc_aggs", []):
+            did = a.get("doc_id", "")
+            if did and did not in doc_agg_map:
+                doc_agg_map[did] = a
+
+    return {
+        "chunks": agg_chunks,
+        "total": len(agg_chunks),
+        "doc_aggs": list(doc_agg_map.values()),
+        "multi_search_results": [
+            {"condition": r["condition"], "chunks": r["chunks"], "total": r["total"]}
+            for r in results
+        ],
+    }
+
+
 def dedupe_list(values: list) -> list:
     seen = set()
     deduped = []

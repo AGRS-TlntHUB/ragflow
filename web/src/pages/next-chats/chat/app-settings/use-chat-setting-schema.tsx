@@ -54,6 +54,7 @@ export function useChatSettingSchema() {
     ...similarityThresholdSchema,
     ...topnSchema,
     ...MetadataFilterSchema,
+    multi_search: z.boolean().optional(),
   });
 
   return formSchema;

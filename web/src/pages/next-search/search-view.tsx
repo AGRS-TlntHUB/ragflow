@@ -13,13 +13,17 @@ import {
 } from '@/components/ui/popover';
 import { RAGFlowPagination } from '@/components/ui/ragflow-pagination';
 import { IReference } from '@/interfaces/database/chat';
+import {
+  IMultiSearchConditionResult,
+  ITestingChunk,
+} from '@/interfaces/database/knowledge';
 import { cn } from '@/lib/utils';
 import { citationMarkerReg } from '@/utils/citation-utils';
 import { getDirAttribute } from '@/utils/text-direction';
 import DOMPurify from 'dompurify';
 import { isEmpty } from 'lodash';
 import { BrainCircuit, Search, X } from 'lucide-react';
-import { Dispatch, SetStateAction, useEffect, useState } from 'react';
+import { Dispatch, SetStateAction, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ISearchAppDetailProps } from '../next-searches/hooks';
 import PdfDrawer from './document-preview-modal';
@@ -31,6 +35,42 @@ import RetrievalDocuments from './retrieval-documents';
 
 const getDirectionText = (content: string) =>
   content.replace(/<[^>]+>/g, ' ').replace(citationMarkerReg, '');
+
+function MultiSearchTabs({
+  results,
+  selectedIdx,
+  onSelect,
+}: {
+  results: IMultiSearchConditionResult[];
+  selectedIdx: number;
+  onSelect: (idx: number) => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className="mt-4 mb-2 flex flex-wrap gap-2">
+      <Button
+        variant={selectedIdx === -1 ? 'default' : 'outline'}
+        size="sm"
+        onClick={() => onSelect(-1)}
+        className="text-xs"
+      >
+        {t('search.multiSearchAll')} ({results.reduce((s, r) => s + r.total, 0)}
+        )
+      </Button>
+      {results.map((r, idx) => (
+        <Button
+          key={idx}
+          variant={selectedIdx === idx ? 'default' : 'outline'}
+          size="sm"
+          onClick={() => onSelect(idx)}
+          className="text-xs"
+        >
+          {r.condition.key} {r.condition.op} {r.condition.value} ({r.total})
+        </Button>
+      ))}
+    </div>
+  );
+}
 
 export default function SearchingView({
   setIsSearching,
@@ -62,19 +102,31 @@ export default function SearchingView({
   pagination,
   onChange,
   applied_meta_filters,
+  multi_search_results,
 }: ISearchReturnProps & {
   setIsSearching?: Dispatch<SetStateAction<boolean>>;
   searchData: ISearchAppDetailProps;
 }) {
   const { t } = useTranslation();
-  // useEffect(() => {
-  //   const changeLanguage = async () => {
-  //     await i18n.changeLanguage('zh');
-  //   };
-  //   changeLanguage();
-  // }, [i18n]);
   const [searchtext, setSearchtext] = useState<string>('');
   const [retrievalLoading, setRetrievalLoading] = useState(false);
+  const [selectedSearchIdx, setSelectedSearchIdx] = useState<number>(-1);
+
+  const isMultiSearch =
+    searchData.search_config.multi_search_enabled &&
+    multi_search_results &&
+    multi_search_results.length > 0;
+
+  const displayChunks: ITestingChunk[] = useMemo(() => {
+    if (!isMultiSearch || selectedSearchIdx < 0) return chunks;
+    const r = multi_search_results?.[selectedSearchIdx];
+    return (r?.chunks ?? []) as ITestingChunk[];
+  }, [isMultiSearch, selectedSearchIdx, chunks, multi_search_results]);
+
+  const displayTotal = useMemo(() => {
+    if (!isMultiSearch || selectedSearchIdx < 0) return total;
+    return multi_search_results?.[selectedSearchIdx]?.total ?? 0;
+  }, [isMultiSearch, selectedSearchIdx, total, multi_search_results]);
 
   useEffect(() => {
     setSearchtext(searchStr);
@@ -197,10 +249,17 @@ export default function SearchingView({
                 />
               </div>
             )}
+            {isMultiSearch && !isSearchStrEmpty && !sendingLoading && (
+              <MultiSearchTabs
+                results={multi_search_results!}
+                selectedIdx={selectedSearchIdx}
+                onSelect={setSelectedSearchIdx}
+              />
+            )}
             <div className="mt-3 ">
-              {chunks?.length > 0 && (
+              {displayChunks?.length > 0 && (
                 <>
-                  {chunks.map((chunk, index) => {
+                  {displayChunks.map((chunk, index) => {
                     return (
                       <div key={index}>
                         <div className="w-full flex flex-col">
@@ -251,7 +310,7 @@ export default function SearchingView({
                             {chunk.docnm_kwd}
                           </div>
                         </div>
-                        {index < chunks.length - 1 && (
+                        {index < displayChunks.length - 1 && (
                           <div className="w-full border-b border-border-default/80 mt-6 mb-2"></div>
                         )}
                       </div>
@@ -291,8 +350,8 @@ export default function SearchingView({
               !retrievalLoading &&
               !answer.answer &&
               !sendingLoading &&
-              total <= 0 &&
-              chunks?.length <= 0 &&
+              displayTotal <= 0 &&
+              displayChunks?.length <= 0 &&
               relatedQuestions?.length <= 0 && (
                 <div className="h-2/5 flex items-center justify-center">
                   <Empty type={EmptyType.SearchData} iconWidth={80} />
@@ -300,7 +359,7 @@ export default function SearchingView({
               )}
           </div>
 
-          {total > 0 && (
+          {displayTotal > 0 && (
             <div className="mt-8 px-8 pb-8 text-base">
               <RAGFlowPagination
                 current={pagination.current}

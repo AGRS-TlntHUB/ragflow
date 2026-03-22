@@ -65,6 +65,7 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
         method: DatasetMetadata.Disabled,
         manual: [],
       },
+      multi_search: false,
     },
   });
 
@@ -73,6 +74,14 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
       values,
       'llm_setting.',
     );
+
+    if (nextValues.meta_data_filter) {
+      nextValues.meta_data_filter = {
+        ...nextValues.meta_data_filter,
+        multi_search: nextValues.multi_search ?? false,
+      };
+    }
+    delete nextValues.multi_search;
 
     setDialog({
       ...omit(data, 'operator_permission'),
@@ -93,6 +102,7 @@ export function ChatSettings({ hasSingleChatBox }: ChatSettingsProps) {
     const nextData = {
       ...data,
       ...llmSettingEnabledValues,
+      multi_search: data.meta_data_filter?.multi_search ?? false,
     };
 
     if (!isEmpty(data)) {
