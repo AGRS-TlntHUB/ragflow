@@ -51,6 +51,12 @@ type EvaluationRun = {
     missing_telemetry_cases?: number;
     failed_cases?: number;
     telemetry_complete_rate?: number;
+    run_duration_s?: number;
+    avg_ttft_ms?: number;
+    avg_tpot_ms?: number;
+    avg_total_time_ms?: number;
+    avg_input_tokens?: number;
+    avg_output_tokens?: number;
   };
 };
 
@@ -611,7 +617,6 @@ export default function Evals() {
   const canDownloadArtifacts = !['RUNNING', 'PENDING'].includes(
     normalizeStatus(selectedRun?.status || ''),
   );
-  const artifactPath = selectedRun ? `run_result_${selectedRun.id}.json` : '-';
   const [submitDialogOpen, setSubmitDialogOpen] = useState(false);
   const [submitDialogStatus, setSubmitDialogStatus] =
     useState<SubmitDialogStatus>('confirm');
@@ -630,9 +635,16 @@ export default function Evals() {
   const [logsOpen, setLogsOpen] = useState(false);
   const [logsContent, setLogsContent] = useState('');
   const [logsLoading, setLogsLoading] = useState(false);
+  const [showOnlyJudgeFailed, setShowOnlyJudgeFailed] = useState(false);
+  const filteredResults = useMemo(() => {
+    if (!showOnlyJudgeFailed) return results;
+    return results.filter(
+      (r) => hasJudgeResult(r.judge_result) && r.judge_result.score === 0,
+    );
+  }, [results, showOnlyJudgeFailed]);
   const selectedResult = useMemo(
-    () => results.find((item) => item.id === selectedResultId),
-    [results, selectedResultId],
+    () => filteredResults.find((item) => item.id === selectedResultId),
+    [filteredResults, selectedResultId],
   );
 
   useEffect(() => {
@@ -640,15 +652,17 @@ export default function Evals() {
   }, [selectedRunId]);
 
   useEffect(() => {
-    if (results.length === 0) {
+    if (filteredResults.length === 0) {
       setSelectedResultId('');
       return;
     }
-    const isValid = results.some((item) => item.id === selectedResultId);
+    const isValid = filteredResults.some(
+      (item) => item.id === selectedResultId,
+    );
     if (!isValid) {
-      setSelectedResultId(results[0].id);
+      setSelectedResultId(filteredResults[0].id);
     }
-  }, [results, selectedResultId]);
+  }, [filteredResults, selectedResultId]);
 
   const handleDeleteTemplate = async (templateId: string) => {
     try {
@@ -1095,16 +1109,7 @@ export default function Evals() {
   };
 
   const selectedRetrievedChunks = selectedResult?.retrieved_chunks || [];
-  const averageExecutionTime = useMemo(() => {
-    if (results.length === 0) {
-      return null;
-    }
-    const total = results.reduce(
-      (sum, result) => sum + (result.execution_time || 0),
-      0,
-    );
-    return total / results.length;
-  }, [results]);
+  const summaryMetrics = selectedRun?.metrics_summary;
 
   return (
     <article className="size-full p-5 flex gap-4 overflow-hidden">
@@ -1258,13 +1263,23 @@ export default function Evals() {
               <div className="grid grid-cols-[120px_1fr] gap-x-3 gap-y-2 text-sm">
                 <div className="text-text-secondary">Eval type</div>
                 <div>{selectedTemplate?.eval_type || fallbackEvalType}</div>
-                <div className="text-text-secondary">Artifact path</div>
-                <code className="break-all">{artifactPath}</code>
-                <div className="text-text-secondary">Avg exec time</div>
+                <div className="text-text-secondary">Eval ID</div>
+                <code className="break-all">{selectedRun?.id || '-'}</code>
+                <div className="text-text-secondary">Run duration</div>
                 <div>
-                  {averageExecutionTime === null
-                    ? '-'
-                    : formatSecondsToHumanReadable(averageExecutionTime)}
+                  {summaryMetrics?.run_duration_s != null
+                    ? formatSecondsToHumanReadable(
+                        summaryMetrics.run_duration_s,
+                      )
+                    : '-'}
+                </div>
+                <div className="text-text-secondary">Avg total time</div>
+                <div>{formatMs(summaryMetrics?.avg_total_time_ms)}</div>
+                <div className="text-text-secondary">Avg TTFT / TPOT</div>
+                <div>
+                  {formatMs(summaryMetrics?.avg_ttft_ms)}
+                  {' / '}
+                  {formatMs(summaryMetrics?.avg_tpot_ms)}
                 </div>
                 <div className="text-text-secondary">Status</div>
                 <div className="flex flex-col gap-1.5">
@@ -1425,7 +1440,21 @@ export default function Evals() {
 
             <ScrollArea className="flex-1 min-h-0">
               <div className="p-4 space-y-3">
-                {results.map((result) => {
+                <div className="flex items-center justify-between pb-1 border-b border-border-default">
+                  <div className="text-sm text-text-secondary">
+                    Showing {filteredResults.length} of {results.length}
+                  </div>
+                  <label className="inline-flex items-center gap-2 text-sm cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      className="cursor-pointer"
+                      checked={showOnlyJudgeFailed}
+                      onChange={(e) => setShowOnlyJudgeFailed(e.target.checked)}
+                    />
+                    Only judge failed
+                  </label>
+                </div>
+                {filteredResults.map((result) => {
                   const active = result.id === selectedResultId;
                   const caseItem = caseMap.get(result.case_id);
                   const answerType = caseItem?.metadata?.answer_type;
